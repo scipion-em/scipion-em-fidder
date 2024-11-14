@@ -26,19 +26,17 @@
 # **************************************************************************
 import os
 import pwem
-from fidder.contants import FIDDER_ENV_ACTIVATION, FIDDER_DEFAULT_ACTIVATION_CMD, FIDDER_DEFAULT_VERSION, FIDDER, \
+from fidder.constants import FIDDER_ENV_ACTIVATION, FIDDER_DEFAULT_ACTIVATION_CMD, FIDDER_DEFAULT_VERSION, FIDDER, \
     FIDDER_CUDA_LIB, V0_0_8, FIDDER_HOME, FIDDER_ENV_NAME
-
-# _logo = "icon.png"
-# _references = ['']
-__version__ = '3.0.0'
-
 from pyworkflow.utils import Environ
+
+__version__ = '3.0.0'
+_logo = "icon.png"
+# _references = ['']
 
 
 class Plugin(pwem.Plugin):
-    _homeVar = FIDDER_HOME
-    _pathVars = [FIDDER_HOME, FIDDER_CUDA_LIB]
+    _pathVars = [FIDDER_CUDA_LIB]
     _supportedVersions = [V0_0_8]
     _url = "https://github.com/scipion-em/scipion-em-fidder"
 
@@ -66,7 +64,7 @@ class Plugin(pwem.Plugin):
         FIDDER_INSTALLED = '%s_%s_installed' % (FIDDER, FIDDER_DEFAULT_VERSION)
         installationCmd = cls.getCondaActivationCmd()
         # Create the environment
-        installationCmd += 'conda create -y -n %s python=3.8 ' % FIDDER_ENV_NAME
+        installationCmd += ' conda create -y -n %s python=3.8 && ' % FIDDER_ENV_NAME
 
         # Activate new the environment
         installationCmd += 'conda activate %s && ' % FIDDER_ENV_NAME

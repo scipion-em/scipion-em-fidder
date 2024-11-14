@@ -24,6 +24,7 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # **************************************************************************
+from fidder.protocols import ProtFidderDetectAndEraseFiducials
 from imod.constants import OUTPUT_TILTSERIES_NAME
 from imod.protocols import ProtImodTsNormalization, ProtImodImportTransformationMatrix
 from pyworkflow.tests import setupTestProject, DataSet
@@ -101,3 +102,8 @@ class TestFidder(TestBaseCentralizedLayer):
         tsPreprocessed = getattr(protTsNorm, OUTPUT_TILTSERIES_NAME, None)
         return tsPreprocessed
 
+    def testFidder(self):
+        print(magentaStr("\n==> Running fidder:"))
+        protFidder = self.newProtocol(ProtFidderDetectAndEraseFiducials,
+                                      inTsSet=self.binnedAlignedTs)
+        self.launchProtocol(protFidder)
