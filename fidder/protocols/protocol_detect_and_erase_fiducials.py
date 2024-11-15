@@ -31,6 +31,8 @@ from os.path import join, basename
 from typing import Union, List
 import mrcfile
 import numpy as np
+from typing_extensions import Tuple
+
 from fidder import Plugin
 from pwem.emlib import DT_FLOAT
 from pwem.emlib.image import ImageHandler
@@ -41,7 +43,6 @@ from pyworkflow.protocol import PointerParam, FloatParam, GT, LE, GPU_LIST, Stri
 from pyworkflow.utils import Message, makePath, cyanStr
 from tomo.objects import SetOfTiltSeries, TiltSeries, TiltImage
 
-
 logger = logging.getLogger(__name__)
 # Form variables
 IN_TS_SET = 'inTsSet'
@@ -51,6 +52,9 @@ MRC = '.mrc'
 MRCS = '.mrcs'
 OUT_MASKS_DIR = 'masks'
 OUT_TS_DIR = 'results'
+EVEN_SUFFIX = '_even'
+ODD_SUFFIX = '_odd'
+MASK_SUFFIX = '_mask'
 
 
 class fidderOutputs(Enum):
@@ -122,46 +126,40 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol):
         self.tsDict = {ts.getTsId(): ts.clone() for ts in self._getInTsSet()}
 
     def convertInputStep(self, tsId: str):
+        oddFn = ''
+        evenFn = ''
         ts = self.tsDict[tsId]
         tsFileName = ts.getFirstItem().getFileName()
+        doEvenOdd = self.doEvenOdd.get()
+        if doEvenOdd:
+            oddFn, evenFn = ts.getOddEven()
+        # Create the necessary directories in tmp
+        self._createTmpDirs(tsId, doEvenOdd=doEvenOdd)
         # Fidder works with individual MRC images --> the tilt-series must be un-stacked
-        currentTsTmpDir = self._getCurrentTsTmpDir(tsId)
-        inImgsDir = self._getUnstackedImgsDir(tsId)
-        masksDir = self._getUnstackedMasksDir(tsId)
-        outImgsDir = self._getUnstackedErasedImgsDir(tsId)
-        makePath(*[currentTsTmpDir,
-                   inImgsDir,
-                   masksDir,
-                   outImgsDir])
         for ti in ts.iterItems(orderBy=TiltImage.INDEX_FIELD):
             index = ti.getIndex()
-            newTiFileName = self._getNewTiTmpFileName(tsId, index)
-            tiFName = f'{index}@{tsFileName}'
-            self.ih.convert(tiFName, newTiFileName, DT_FLOAT)
+            self._generateUnstakedImg(tsId, tsFileName, index)
+            if doEvenOdd:
+                self._generateUnstakedImg(tsId, evenFn, index)
+                self._generateUnstakedImg(tsId, oddFn, index)
 
     def predictAndEraseFiducialMaskStep(self, tsId: str):
         logger.info(cyanStr(f'===> tsId = {tsId}: Predicting the fiducial mask and erasing them...'))
-        imagesList = glob.glob(join(self._getUnstackedImgsDir(tsId), '*' + MRC))
-        nImgs = len(imagesList)
-        for i, inImage in enumerate(sorted(imagesList)):
-            logger.info(cyanStr(f'======> tsId = {tsId}: processing image {i + 1} of {nImgs}'))
-            outImgMask = self._getOutputMaskFileName(tsId, inImage)
-            outResultImg = self._getOutputImgFileName(tsId, inImage)
-            # Predict
-            args = self._getPredictArgs(inImage, outImgMask)
-            Plugin.runFidder(self, args)
-            # Erase
-            args = self._getEraseFidArgs(inImage, outImgMask, outResultImg)
-            Plugin.runFidder(self, args)
+        self._runFidder(tsId)
+        # Odd/Even
+        if self.doEvenOdd.get():
+            self._runFidder(tsId, suffix=EVEN_SUFFIX)
+            self._runFidder(tsId, suffix=ODD_SUFFIX)
 
     def createOutputStep(self, tsId: str):
         logger.info(cyanStr(f'===> tsId = {tsId}: Creating the resulting tilt-series...'))
+        doEvenOdd = self.doEvenOdd.get()
         if self.saveMaskStack.get():
             # Mount the segmented stack
-            self._mountCurrentStack(tsId, self._getUnstackedMasksDir(tsId), suffix='mask')
+            self._mountSegmentedStack(tsId, doEvenOdd=doEvenOdd)
 
         # Mount the resulting tilt-series
-        resultingTsFileName = self._mountCurrentStack(tsId, self._getUnstackedErasedImgsDir(tsId))
+        tsFName, tsFnameEven, tsFnameOdd = self._mountTiltSeries(tsId, doEvenOdd=doEvenOdd)
 
         inTs = self._getInTsSet().getItem(TiltSeries.TS_ID_FIELD, tsId)
         outTsSet = self._getOutputTsSet()
@@ -170,8 +168,11 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol):
         outTsSet.append(newTs)
 
         for inTi in inTs.iterItems(orderBy=TiltImage.INDEX_FIELD):
-            newTi = inTi.clone()
-            newTi.setFileName(resultingTsFileName)
+            newTi = TiltImage()
+            newTi.copyInfo(inTi)
+            newTi.setFileName(tsFName)
+            if doEvenOdd:
+                newTi.setOddEven([tsFnameOdd, tsFnameEven])
             newTs.append(newTi)
 
         newTs.write()
@@ -180,39 +181,63 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol):
         self._store(outTsSet)
 
     # --------------------------- UTILS functions -----------------------------
-    def _getInTsSet(self, returnPointer: bool=False) -> Union[SetOfTiltSeries, Pointer]:
+    def _getInTsSet(self, returnPointer: bool = False) -> Union[SetOfTiltSeries, Pointer]:
         inTsPointer = getattr(self, IN_TS_SET)
         return inTsPointer if returnPointer else inTsPointer.get()
 
     def _getCurrentTsTmpDir(self, tsId: str) -> str:
         return self._getTmpPath(tsId)
 
-    def _getUnstackedImgsDir(self, tsId: str) -> str:
-        return join(self._getCurrentTsTmpDir(tsId), 'unstackedImgs')
+    def _getUnstackedImgsDir(self, tsId: str, suffix: str = '') -> str:
+        return join(self._getCurrentTsTmpDir(tsId), 'unstackedImgs' + suffix)
 
-    def _getUnstackedMasksDir(self, tsId: str) -> str:
-        return join(self._getCurrentTsTmpDir(tsId), 'unstackedMasks')
+    def _getUnstackedMasksDir(self, tsId: str, suffix: str = '') -> str:
+        return join(self._getCurrentTsTmpDir(tsId), 'unstackedMasks' + suffix)
 
-    def _getUnstackedErasedImgsDir(self, tsId: str) -> str:
-        return join(self._getCurrentTsTmpDir(tsId), 'unstackedResults')
+    def _getUnstackedErasedImgsDir(self, tsId: str, suffix: str = '') -> str:
+        return join(self._getCurrentTsTmpDir(tsId), 'unstackedResults' + suffix)
 
-    def _getOutputMaskFileName(self, tsId: str, inImageFileName: str) -> str:
-        return join(self._getUnstackedMasksDir(tsId), basename(inImageFileName))
+    def _getOutputMaskFileName(self, tsId: str, inImageFileName: str, suffix: str = '') -> str:
+        return join(self._getUnstackedMasksDir(tsId), basename(inImageFileName) + suffix)
 
-    def _getOutputImgFileName(self, tsId: str, inImageFileName: str) -> str:
-        return join(self._getUnstackedErasedImgsDir(tsId), basename(inImageFileName))
+    def _getOutputImgFileName(self, tsId: str, inImageFileName: str, suffix: str = '') -> str:
+        return join(self._getUnstackedErasedImgsDir(tsId, suffix=suffix), basename(inImageFileName))
+
+    def _getTsNewFileName(self, tsId, suffix: str = '') -> str:
+        return self._getExtraPath(f'{tsId}{suffix}{MRCS}')
 
     @staticmethod
-    def _getTsNewFileName(tsId, suffix: str='') -> str:
-        return f'{tsId}_{suffix}{MRCS}'
+    def _getNewTiFileName(tsId: str, index: int, suffix: str = '') -> str:
+        return f'{tsId}_{index:03}{suffix}{MRC}'
 
-    @staticmethod
-    def _getNewTiFileName(tsId: str, index: int) -> str:
-        return f'{tsId}_{index:03}{MRC}'
+    def _getNewTiTmpFileName(self, tsId: str, index: int, suffix: str = '') -> str:
+        return join(self._getUnstackedImgsDir(tsId, suffix=suffix),
+                    self._getNewTiFileName(tsId, index, suffix=suffix))
 
-    def _getNewTiTmpFileName(self, tsId: str, index: int) -> str:
-        return join(self._getUnstackedImgsDir(tsId), self._getNewTiFileName(tsId, index))
-
+    def _createTmpDirs(self, tsId: str, doEvenOdd: bool = False) -> None:
+        currentTsTmpDir = self._getCurrentTsTmpDir(tsId)
+        inImgsDir = self._getUnstackedImgsDir(tsId)
+        masksDir = self._getUnstackedMasksDir(tsId)
+        outImgsDir = self._getUnstackedErasedImgsDir(tsId)
+        dirList = [currentTsTmpDir,
+                   inImgsDir,
+                   masksDir,
+                   outImgsDir]
+        if doEvenOdd:
+            inImgsDirEven = self._getUnstackedImgsDir(tsId, suffix=EVEN_SUFFIX)
+            masksDirEven = self._getUnstackedMasksDir(tsId, suffix=EVEN_SUFFIX)
+            outImgsDirEven = self._getUnstackedErasedImgsDir(tsId, suffix=EVEN_SUFFIX)
+            inImgsDirOdd = self._getUnstackedImgsDir(tsId, suffix=ODD_SUFFIX)
+            masksDirOdd = self._getUnstackedMasksDir(tsId, suffix=ODD_SUFFIX)
+            outImgsDirOdd = self._getUnstackedErasedImgsDir(tsId, suffix=ODD_SUFFIX)
+            evenOdddirList = [inImgsDirEven,
+                              masksDirEven,
+                              outImgsDirEven,
+                              inImgsDirOdd,
+                              masksDirOdd,
+                              outImgsDirOdd]
+            dirList.extend(evenOdddirList)
+        makePath(*dirList)
 
     def _getPredictArgs(self, inImage: str, outMask: str) -> str:
         cmd = [
@@ -234,6 +259,25 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol):
         ]
         return ' '.join(cmd)
 
+    def _runFidder(self, tsId: str, suffix: str = ''):
+        imagesList = glob.glob(join(self._getUnstackedImgsDir(tsId, suffix=suffix), '*' + MRC))
+        nImgs = len(imagesList)
+        for i, inImage in enumerate(sorted(imagesList)):
+            logger.info(cyanStr(f'======> tsId = {tsId}{suffix}: processing image {i + 1} of {nImgs}'))
+            outImgMask = self._getOutputMaskFileName(tsId, inImage, suffix=suffix)
+            outResultImg = self._getOutputImgFileName(tsId, inImage, suffix=suffix)
+            # Predict
+            args = self._getPredictArgs(inImage, outImgMask)
+            Plugin.runFidder(self, args)
+            # Erase
+            args = self._getEraseFidArgs(inImage, outImgMask, outResultImg)
+            Plugin.runFidder(self, args)
+
+    def _generateUnstakedImg(self, tsId: str, tsFileName: str, index: int, suffix: str = '') -> None:
+        newTiFileName = self._getNewTiTmpFileName(tsId, index, suffix=suffix)
+        tiFName = f'{index}@{tsFileName}'
+        self.ih.convert(tiFName, newTiFileName, DT_FLOAT)
+
     def _getOutputTsSet(self) -> SetOfTiltSeries:
         outSetSetAttrib = self._possibleOutputs.tiltSeries.name
         outTsSet = getattr(self, outSetSetAttrib, None)
@@ -247,10 +291,9 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol):
             self._defineSourceRelation(self._getInTsSet(returnPointer=True), outTsSet)
         return outTsSet
 
-    def _mountCurrentStack(self, tsId: str, imagesDir: str, suffix: str='') -> str:
-        suffix = '_' + suffix if suffix else suffix
+    def _mountCurrentStack(self, tsId: str, imagesDir: str, suffix: str = '') -> str:
         logger.info(cyanStr(f'===> tsId = {tsId}{suffix}: mounting the stack file...'))
-        outStackFile = self._getExtraPath(f'{tsId}{suffix}{MRCS}')
+        outStackFile = self._getTsNewFileName(tsId, suffix=suffix)
         resultImgs = sorted(glob.glob(join(imagesDir, '*' + MRC)))
 
         # Read the first image to get the dimensions
@@ -275,6 +318,39 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol):
             mrc.update_header_stats()
             mrc.voxel_size = self.sRate
         return outStackFile
+
+    def _mountSegmentedStack(self, tsId: str, doEvenOdd: bool=False) -> None:
+        self._mountCurrentStack(tsId,
+                                self._getUnstackedMasksDir(tsId),
+                                suffix=MASK_SUFFIX)
+        if doEvenOdd:
+            self._mountCurrentStack(tsId,
+                                    self._getUnstackedMasksDir(tsId, suffix=EVEN_SUFFIX),
+                                    suffix=EVEN_SUFFIX + MASK_SUFFIX)
+            self._mountCurrentStack(tsId,
+                                    self._getUnstackedMasksDir(tsId, suffix=ODD_SUFFIX),
+                                    suffix=ODD_SUFFIX + MASK_SUFFIX)
+
+    def _mountTiltSeries(self, tsId: str, doEvenOdd: bool=False) -> Tuple[str, str, str]:
+        resultingTsFileNameEven = ''
+        resultingTsFileNameOdd = ''
+        unstackedErasedImgsDir = self._getUnstackedErasedImgsDir(tsId)
+        resultingTsFileName = self._mountCurrentStack(tsId, unstackedErasedImgsDir)
+        if doEvenOdd:
+            # Even
+            unstackedErasedImgsDirEven = self._getUnstackedErasedImgsDir(tsId,
+                                                                         suffix=EVEN_SUFFIX)
+            resultingTsFileNameEven = self._mountCurrentStack(tsId,
+                                                              unstackedErasedImgsDirEven,
+                                                              suffix=EVEN_SUFFIX)
+            # Odd
+            unstackedErasedImgsDirOdd = self._getUnstackedErasedImgsDir(tsId,
+                                                                        suffix=ODD_SUFFIX)
+            resultingTsFileNameOdd = self._mountCurrentStack(tsId,
+                                                             unstackedErasedImgsDirOdd,
+                                                             suffix=ODD_SUFFIX)
+
+        return resultingTsFileName, resultingTsFileNameEven, resultingTsFileNameOdd
 
     # --------------------------- INFO functions ------------------------------
     def _validate(self) -> List[str]:
