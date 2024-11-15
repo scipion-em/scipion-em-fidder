@@ -39,7 +39,8 @@ from pwem.emlib.image import ImageHandler
 from pwem.protocols import EMProtocol
 from pyworkflow.constants import BETA
 from pyworkflow.object import Set, Pointer
-from pyworkflow.protocol import PointerParam, FloatParam, GT, LE, GPU_LIST, StringParam, BooleanParam, LEVEL_ADVANCED
+from pyworkflow.protocol import PointerParam, FloatParam, GT, LE, GPU_LIST, StringParam, BooleanParam, LEVEL_ADVANCED, \
+    STEPS_PARALLEL
 from pyworkflow.utils import Message, makePath, cyanStr
 from tomo.objects import SetOfTiltSeries, TiltSeries, TiltImage
 
@@ -69,6 +70,7 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol):
     _label = 'detect and erase fiducials'
     _devStatus = BETA
     _possibleOutputs = fidderOutputs
+    stepsExecutionMode = STEPS_PARALLEL
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -100,12 +102,14 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol):
         form.addHidden(GPU_LIST, StringParam,
                        default='0',
                        label="Choose GPU IDs")
+        form.addParallelSection(threads=1, mpi=0)
 
     # --------------------------- INSERT steps functions ----------------------
     def _insertAllSteps(self):
         self._initialize()
         closeSetStepDeps = []
-        for tsId in self.tsDict.keys():
+        for ts in self._getInTsSet().iterItems():
+            tsId = ts.getTsId()
             cInputId = self._insertFunctionStep(self.convertInputStep, tsId,
                                                 prerequisites=[],
                                                 needsGPU=False)
@@ -123,12 +127,12 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol):
     # -------------------------- STEPS functions ------------------------------
     def _initialize(self):
         self.sRate = self._getInTsSet().getSamplingRate()
-        self.tsDict = {ts.getTsId(): ts.clone() for ts in self._getInTsSet()}
+        # self.tsDict = {ts.getTsId(): ts.clone() for ts in self._getInTsSet()}
 
     def convertInputStep(self, tsId: str):
         oddFn = ''
         evenFn = ''
-        ts = self.tsDict[tsId]
+        ts = self._getInTsSet().getItem(TiltSeries.TS_ID_FIELD, tsId)
         tsFileName = ts.getFirstItem().getFileName()
         doEvenOdd = self.doEvenOdd.get()
         if doEvenOdd:
@@ -152,33 +156,34 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol):
             self._runFidder(tsId, suffix=ODD_SUFFIX)
 
     def createOutputStep(self, tsId: str):
-        logger.info(cyanStr(f'===> tsId = {tsId}: Creating the resulting tilt-series...'))
-        doEvenOdd = self.doEvenOdd.get()
-        if self.saveMaskStack.get():
-            # Mount the segmented stack
-            self._mountSegmentedStack(tsId, doEvenOdd=doEvenOdd)
+        with self._lock:
+            logger.info(cyanStr(f'===> tsId = {tsId}: Creating the resulting tilt-series...'))
+            doEvenOdd = self.doEvenOdd.get()
+            if self.saveMaskStack.get():
+                # Mount the segmented stack
+                self._mountSegmentedStack(tsId, doEvenOdd=doEvenOdd)
 
-        # Mount the resulting tilt-series
-        tsFName, tsFnameEven, tsFnameOdd = self._mountTiltSeries(tsId, doEvenOdd=doEvenOdd)
+            # Mount the resulting tilt-series
+            tsFName, tsFnameEven, tsFnameOdd = self._mountTiltSeries(tsId, doEvenOdd=doEvenOdd)
 
-        inTs = self._getInTsSet().getItem(TiltSeries.TS_ID_FIELD, tsId)
-        outTsSet = self._getOutputTsSet()
-        newTs = TiltSeries()
-        newTs.copyInfo(inTs)
-        outTsSet.append(newTs)
+            inTs = self._getInTsSet().getItem(TiltSeries.TS_ID_FIELD, tsId)
+            outTsSet = self._getOutputTsSet()
+            newTs = TiltSeries()
+            newTs.copyInfo(inTs)
+            outTsSet.append(newTs)
 
-        for inTi in inTs.iterItems(orderBy=TiltImage.INDEX_FIELD):
-            newTi = TiltImage()
-            newTi.copyInfo(inTi)
-            newTi.setFileName(tsFName)
-            if doEvenOdd:
-                newTi.setOddEven([tsFnameOdd, tsFnameEven])
-            newTs.append(newTi)
+            for inTi in inTs.iterItems(orderBy=TiltImage.INDEX_FIELD):
+                newTi = TiltImage()
+                newTi.copyInfo(inTi)
+                newTi.setFileName(tsFName)
+                if doEvenOdd:
+                    newTi.setOddEven([tsFnameOdd, tsFnameEven])
+                newTs.append(newTi)
 
-        newTs.write()
-        outTsSet.update(newTs)
-        outTsSet.write()
-        self._store(outTsSet)
+            newTs.write()
+            outTsSet.update(newTs)
+            outTsSet.write()
+            self._store(outTsSet)
 
     # --------------------------- UTILS functions -----------------------------
     def _getInTsSet(self, returnPointer: bool = False) -> Union[SetOfTiltSeries, Pointer]:
