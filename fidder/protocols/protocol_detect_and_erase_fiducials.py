@@ -28,7 +28,7 @@ import glob
 import logging
 from enum import Enum
 from os.path import join, basename
-from typing import Union
+from typing import Union, List
 import mrcfile
 import numpy as np
 from fidder import Plugin
@@ -37,8 +37,8 @@ from pwem.emlib.image import ImageHandler
 from pwem.protocols import EMProtocol
 from pyworkflow.constants import BETA
 from pyworkflow.object import Set, Pointer
-from pyworkflow.protocol import PointerParam, FloatParam, GT, LE, GPU_LIST, StringParam, BooleanParam
-from pyworkflow.utils import Message, makePath
+from pyworkflow.protocol import PointerParam, FloatParam, GT, LE, GPU_LIST, StringParam, BooleanParam, LEVEL_ADVANCED
+from pyworkflow.utils import Message, makePath, cyanStr
 from tomo.objects import SetOfTiltSeries, TiltSeries, TiltImage
 
 
@@ -84,22 +84,24 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol):
                       validators=[GT(0), LE(1)],
                       label='Fiducial probability threshold',
                       help='Threshold in range (0, 1] above which pixels are considered part of a fiducial.')
+        form.addParam('doEvenOdd', BooleanParam,
+                      label='Erase the fiducials in the odd/even tilt-series?',
+                      default=False)
         form.addParam('saveMaskStack', BooleanParam,
                       default=False,
                       label='Save the fiducial-segmented stack?',
+                      expertLevel=LEVEL_ADVANCED,
                       help='If set to Yes, the stack generated for each tilt-series with fiducial-based '
                            'segmentation will be saved.')
         form.addHidden(GPU_LIST, StringParam,
                        default='0',
                        label="Choose GPU IDs")
-        # TODO: add ood/even functionality
 
     # --------------------------- INSERT steps functions ----------------------
     def _insertAllSteps(self):
         self._initialize()
         closeSetStepDeps = []
         for tsId in self.tsDict.keys():
-            logging.info(f'===> Inserting the steps for tsId = {tsId}...')
             cInputId = self._insertFunctionStep(self.convertInputStep, tsId,
                                                 prerequisites=[],
                                                 needsGPU=False)
@@ -138,9 +140,11 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol):
             self.ih.convert(tiFName, newTiFileName, DT_FLOAT)
 
     def predictAndEraseFiducialMaskStep(self, tsId: str):
-        logger.info(f'===> tsId = {tsId}: Predicting a fiducial mask using a pretrained model and erasing them...')
+        logger.info(cyanStr(f'===> tsId = {tsId}: Predicting the fiducial mask and erasing them...'))
         imagesList = glob.glob(join(self._getUnstackedImgsDir(tsId), '*' + MRC))
-        for inImage in sorted(imagesList):
+        nImgs = len(imagesList)
+        for i, inImage in enumerate(sorted(imagesList)):
+            logger.info(cyanStr(f'======> tsId = {tsId}: processing image {i + 1} of {nImgs}'))
             outImgMask = self._getOutputMaskFileName(tsId, inImage)
             outResultImg = self._getOutputImgFileName(tsId, inImage)
             # Predict
@@ -151,7 +155,7 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol):
             Plugin.runFidder(self, args)
 
     def createOutputStep(self, tsId: str):
-        logger.info(f'===> tsId = {tsId}: Creating the resulting tilt-series...')
+        logger.info(cyanStr(f'===> tsId = {tsId}: Creating the resulting tilt-series...'))
         if self.saveMaskStack.get():
             # Mount the segmented stack
             self._mountCurrentStack(tsId, self._getUnstackedMasksDir(tsId), suffix='mask')
@@ -245,7 +249,7 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol):
 
     def _mountCurrentStack(self, tsId: str, imagesDir: str, suffix: str='') -> str:
         suffix = '_' + suffix if suffix else suffix
-        logger.info(f'===> tsId={tsId}{suffix}: mounting the stack file...')
+        logger.info(cyanStr(f'===> tsId = {tsId}{suffix}: mounting the stack file...'))
         outStackFile = self._getExtraPath(f'{tsId}{suffix}{MRCS}')
         resultImgs = sorted(glob.glob(join(imagesDir, '*' + MRC)))
 
@@ -271,3 +275,12 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol):
             mrc.update_header_stats()
             mrc.voxel_size = self.sRate
         return outStackFile
+
+    # --------------------------- INFO functions ------------------------------
+    def _validate(self) -> List[str]:
+        errors = []
+        if self.doEvenOdd.get() and not self._getInTsSet().hasOddEven():
+            errors.append('The even/odd tilt-series cannot be processed as no even/odd tilt-series '
+                          'are found in the metadata of the introduced tilt-series.')
+
+        return errors
