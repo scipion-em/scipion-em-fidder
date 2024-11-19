@@ -32,7 +32,6 @@ from typing import Union, List
 import mrcfile
 import numpy as np
 from typing_extensions import Tuple
-
 from fidder import Plugin
 from pwem.emlib import DT_FLOAT
 from pwem.emlib.image import ImageHandler
@@ -84,7 +83,7 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol):
         form.addParam(IN_TS_SET, PointerParam,
                       pointerClass='SetOfTiltSeries',
                       important=True,
-                      label='Input set of Tilt-Series')
+                      label='Tilt-Series')
         form.addParam(PROB_THRESHOLD, FloatParam,
                       default=0.5,
                       validators=[GT(0), LE(1)],
@@ -98,7 +97,8 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol):
                       label='Save the fiducial-segmented stack?',
                       expertLevel=LEVEL_ADVANCED,
                       help='If set to Yes, the stack generated for each tilt-series with fiducial-based '
-                           'segmentation will be saved.')
+                           'segmentation will be saved (but not registered as Scipion objects. They can be '
+                           'found in the protocol directory > extra.')
         form.addHidden(GPU_LIST, StringParam,
                        default='0',
                        label="Choose GPU IDs")
@@ -127,25 +127,16 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol):
     # -------------------------- STEPS functions ------------------------------
     def _initialize(self):
         self.sRate = self._getInTsSet().getSamplingRate()
-        # self.tsDict = {ts.getTsId(): ts.clone() for ts in self._getInTsSet()}
 
     def convertInputStep(self, tsId: str):
-        oddFn = ''
-        evenFn = ''
         ts = self._getInTsSet().getItem(TiltSeries.TS_ID_FIELD, tsId)
         tsFileName = ts.getFirstItem().getFileName()
-        doEvenOdd = self.doEvenOdd.get()
-        if doEvenOdd:
-            oddFn, evenFn = ts.getOddEven()
         # Create the necessary directories in tmp
-        self._createTmpDirs(tsId, doEvenOdd=doEvenOdd)
+        self._createTmpDirs(tsId, doEvenOdd=self.doEvenOdd.get())
         # Fidder works with individual MRC images --> the tilt-series must be un-stacked
         for ti in ts.iterItems(orderBy=TiltImage.INDEX_FIELD):
             index = ti.getIndex()
             self._generateUnstakedImg(tsId, tsFileName, index)
-            if doEvenOdd:
-                self._generateUnstakedImg(tsId, evenFn, index)
-                self._generateUnstakedImg(tsId, oddFn, index)
 
     def predictAndEraseFiducialMaskStep(self, tsId: str):
         logger.info(cyanStr(f'===> tsId = {tsId}: Predicting the fiducial mask and erasing them...'))
@@ -161,7 +152,7 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol):
             doEvenOdd = self.doEvenOdd.get()
             if self.saveMaskStack.get():
                 # Mount the segmented stack
-                self._mountSegmentedStack(tsId, doEvenOdd=doEvenOdd)
+                self._mountSegmentedStack(tsId)
 
             # Mount the resulting tilt-series
             tsFName, tsFnameEven, tsFnameOdd = self._mountTiltSeries(tsId, doEvenOdd=doEvenOdd)
@@ -229,17 +220,9 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol):
                    masksDir,
                    outImgsDir]
         if doEvenOdd:
-            inImgsDirEven = self._getUnstackedImgsDir(tsId, suffix=EVEN_SUFFIX)
-            masksDirEven = self._getUnstackedMasksDir(tsId, suffix=EVEN_SUFFIX)
             outImgsDirEven = self._getUnstackedErasedImgsDir(tsId, suffix=EVEN_SUFFIX)
-            inImgsDirOdd = self._getUnstackedImgsDir(tsId, suffix=ODD_SUFFIX)
-            masksDirOdd = self._getUnstackedMasksDir(tsId, suffix=ODD_SUFFIX)
             outImgsDirOdd = self._getUnstackedErasedImgsDir(tsId, suffix=ODD_SUFFIX)
-            evenOdddirList = [inImgsDirEven,
-                              masksDirEven,
-                              outImgsDirEven,
-                              inImgsDirOdd,
-                              masksDirOdd,
+            evenOdddirList = [outImgsDirEven,
                               outImgsDirOdd]
             dirList.extend(evenOdddirList)
         makePath(*dirList)
@@ -269,12 +252,13 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol):
         nImgs = len(imagesList)
         for i, inImage in enumerate(sorted(imagesList)):
             logger.info(cyanStr(f'======> tsId = {tsId}{suffix}: processing image {i + 1} of {nImgs}'))
-            outImgMask = self._getOutputMaskFileName(tsId, inImage, suffix=suffix)
+            outImgMask = self._getOutputMaskFileName(tsId, inImage)
             outResultImg = self._getOutputImgFileName(tsId, inImage, suffix=suffix)
-            # Predict
-            args = self._getPredictArgs(inImage, outImgMask)
-            Plugin.runFidder(self, args)
-            # Erase
+            # Predict: only for the whole TS
+            if not suffix:
+                args = self._getPredictArgs(inImage, outImgMask)
+                Plugin.runFidder(self, args)
+            # Erase: do always this part, no matter if it's the whole TS, the even or the odd
             args = self._getEraseFidArgs(inImage, outImgMask, outResultImg)
             Plugin.runFidder(self, args)
 
@@ -324,17 +308,10 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol):
             mrc.voxel_size = self.sRate
         return outStackFile
 
-    def _mountSegmentedStack(self, tsId: str, doEvenOdd: bool=False) -> None:
+    def _mountSegmentedStack(self, tsId: str) -> None:
         self._mountCurrentStack(tsId,
                                 self._getUnstackedMasksDir(tsId),
                                 suffix=MASK_SUFFIX)
-        if doEvenOdd:
-            self._mountCurrentStack(tsId,
-                                    self._getUnstackedMasksDir(tsId, suffix=EVEN_SUFFIX),
-                                    suffix=EVEN_SUFFIX + MASK_SUFFIX)
-            self._mountCurrentStack(tsId,
-                                    self._getUnstackedMasksDir(tsId, suffix=ODD_SUFFIX),
-                                    suffix=ODD_SUFFIX + MASK_SUFFIX)
 
     def _mountTiltSeries(self, tsId: str, doEvenOdd: bool=False) -> Tuple[str, str, str]:
         resultingTsFileNameEven = ''
