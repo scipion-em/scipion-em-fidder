@@ -10,8 +10,7 @@ from setuptools import setup, find_packages
 # To use a consistent encoding
 from codecs import open
 from os import path
-
-from pyseg import __version__
+from fidder import __version__
 
 here = path.abspath(path.dirname(__file__))
 
@@ -49,7 +48,7 @@ setup(
         #   3 - Alpha
         #   4 - Beta
         #   5 - Production/Stable
-        'Development Status :: Alpha',
+        'Development Status :: Beta',
 
         # Indicate who your project is intended for
         #   'Intended Audience :: Users',
