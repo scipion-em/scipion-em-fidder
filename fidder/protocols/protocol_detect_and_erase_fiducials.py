@@ -129,12 +129,15 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol):
         self.sRate = self._getInTsSet().getSamplingRate()
 
     def convertInputStep(self, tsId: str):
+        logger.info(cyanStr(f'===> tsId = {tsId}: Unstacking...'))
         ts = self._getInTsSet().getItem(TiltSeries.TS_ID_FIELD, tsId)
         tsFileName = ts.getFirstItem().getFileName()
+        nImgs = len(ts)
         # Create the necessary directories in tmp
         self._createTmpDirs(tsId, doEvenOdd=self.doEvenOdd.get())
         # Fidder works with individual MRC images --> the tilt-series must be un-stacked
-        for ti in ts.iterItems(orderBy=TiltImage.INDEX_FIELD):
+        for i, ti in enumerate(ts.iterItems(orderBy=TiltImage.INDEX_FIELD)):
+            logger.info(cyanStr(f'======> tsId = {tsId}: unstacked image {i + 1} of {nImgs}'))
             index = ti.getIndex()
             self._generateUnstakedImg(tsId, tsFileName, index)
 
@@ -264,7 +267,7 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol):
 
     def _generateUnstakedImg(self, tsId: str, tsFileName: str, index: int, suffix: str = '') -> None:
         newTiFileName = self._getNewTiTmpFileName(tsId, index, suffix=suffix)
-        tiFName = f'{index}@{tsFileName}'
+        tiFName = f'{index}@{tsFileName}:mrcs'
         self.ih.convert(tiFName, newTiFileName, DT_FLOAT)
 
     def _getOutputTsSet(self) -> SetOfTiltSeries:
