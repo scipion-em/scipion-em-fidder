@@ -14,6 +14,10 @@ Scipion plugin for fidder
         :target: https://pypi.python.org/pypi/scipion-em-fidder
         :alt: Supported Python versions
 
+.. image:: https://img.shields.io/sonar/quality_gate/scipion-em_scipion-em-fidder?server=https%3A%2F%2Fsonarcloud.io
+        :target: https://sonarcloud.io/dashboard?id=scipion-em_scipion-em-fidder
+        :alt: SonarCloud quality gate
+
 .. image:: https://img.shields.io/pypi/dm/scipion-em-fidder
         :target: https://pypi.python.org/pypi/scipion-em-fidder
         :alt: Downloads
