@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "scipion-em-fidder"
+dynamic = ["version"]
+description = "Plugin to use fidder within the Scipion framework"
+authors = [
+    {name = "Scipion Team", email = "scipion@cnb.csic.es"}
+]
+dependencies = [
+    "scipion-em-tomo>=3.9.1",
+]
+requires-python = ">=3.8"
+readme = "README.rst"
+license = {text = "GNU General Public License v3 (GPLv3)"}
+classifiers = [
+    "Development Status :: Beta",
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+    "Programming Language :: Python :: 3",
+    "Framework :: Scipion :: 3"
+]
+keywords = ["scipion", "cryoem", "cryoet", "imageprocessing", "scipion-3.0"]
+
+[project.urls]
+Homepage = "https://github.com/scipion-em/scipion-em-fidder"
+Issues = "https://github.com/scipion-em/scipion-em-fidder/issues"
+
+[tool.setuptools.dynamic]
+version = {attr = "fidder.__version__"}
+
+[project.entry-points."pyworkflow.plugin"]
+fidder = "fidder"
