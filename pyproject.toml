@@ -16,7 +16,10 @@ requires-python = ">=3.8"
 readme = "README.rst"
 license = {text = "GNU General Public License v3 (GPLv3)"}
 classifiers = [
-    "Development Status :: Beta",
+    #   3 - Alpha
+    #   4 - Beta
+    #   5 - Production/Stable
+    "Development Status :: 4 - Beta",
     "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
     "Programming Language :: Python :: 3",
     "Framework :: Scipion :: 3"
