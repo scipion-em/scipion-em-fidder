@@ -32,5 +32,8 @@ Issues = "https://github.com/scipion-em/scipion-em-fidder/issues"
 [tool.setuptools.dynamic]
 version = {attr = "fidder.__version__"}
 
+[tool.setuptools.package-data]
+"fidder" = ["protocols.conf", "icon.png", "templates/*"]
+
 [project.entry-points."pyworkflow.plugin"]
 fidder = "fidder"

@@ -1,1 +1,2 @@
-3.0.0:
+3.0.1: Update toml with the package data.
+3.0.0: First release.
