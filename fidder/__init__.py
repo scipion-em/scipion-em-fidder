@@ -64,7 +64,7 @@ class Plugin(pwem.Plugin):
         FIDDER_INSTALLED = '%s_%s_installed' % (FIDDER, FIDDER_DEFAULT_VERSION)
         installationCmd = cls.getCondaActivationCmd()
         # Create the environment
-        installationCmd += ' conda create -y -n %s python=3.8 && ' % FIDDER_ENV_NAME
+        installationCmd += ' conda create -y -n %s -c conda-forge python=3.8 && ' % FIDDER_ENV_NAME
 
         # Activate new the environment
         installationCmd += 'conda activate %s && ' % FIDDER_ENV_NAME
