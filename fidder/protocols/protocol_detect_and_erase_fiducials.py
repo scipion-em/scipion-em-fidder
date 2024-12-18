@@ -26,6 +26,7 @@
 # **************************************************************************
 import glob
 import logging
+import shutil
 from enum import Enum
 from os.path import join, basename
 from typing import Union, List
@@ -132,15 +133,15 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol):
         logger.info(cyanStr(f'===> tsId = {tsId}: Unstacking...'))
         ts = self._getInTsSet().getItem(TiltSeries.TS_ID_FIELD, tsId)
         tsFileName = ts.getFirstItem().getFileName()
-        nImgs = len(ts)
         # Create the necessary directories in tmp
         self._createTmpDirs(tsId, doEvenOdd=self.doEvenOdd.get())
         # Fidder works with individual MRC images --> the tilt-series must be un-stacked
         for i, ti in enumerate(ts.iterItems(orderBy=TiltImage.INDEX_FIELD)):
+            index = i + 1
             if ti.isEnabled():
-                self._generateUnstakedImg(tsId, tsFileName, i)
+                self._generateUnstakedImg(tsId, tsFileName, index)
             else:
-                logger.info(cyanStr(f'======> Image on index {i + 1} was skipped because it is disabled.'))
+                logger.info(cyanStr(f'======> Image on index {index} was skipped because it is disabled.'))
 
     def predictAndEraseFiducialMaskStep(self, tsId: str):
         logger.info(cyanStr(f'===> tsId = {tsId}: Predicting the fiducial mask and erasing them...'))
@@ -179,6 +180,9 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol):
             outTsSet.update(newTs)
             outTsSet.write()
             self._store(outTsSet)
+
+        # Clean the current ts folder/s in /tmp
+        shutil.rmtree(self._getTmpPath(tsId))
 
     # --------------------------- UTILS functions -----------------------------
     def _getInTsSet(self, returnPointer: bool = False) -> Union[SetOfTiltSeries, Pointer]:
