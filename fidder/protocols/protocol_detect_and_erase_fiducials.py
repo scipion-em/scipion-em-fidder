@@ -138,10 +138,7 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol):
         # Fidder works with individual MRC images --> the tilt-series must be un-stacked
         for i, ti in enumerate(ts.iterItems(orderBy=TiltImage.INDEX_FIELD)):
             index = i + 1
-            if ti.isEnabled():
-                self._generateUnstakedImg(tsId, tsFileName, index)
-            else:
-                logger.info(cyanStr(f'======> Image on index {index} was skipped because it is disabled.'))
+            self._generateUnstakedImg(tsId, tsFileName, index)
 
     def predictAndEraseFiducialMaskStep(self, tsId: str):
         logger.info(cyanStr(f'===> tsId = {tsId}: Predicting the fiducial mask and erasing them...'))
