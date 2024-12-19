@@ -166,7 +166,9 @@ class TestFidder(TestBaseCentralizedLayer):
 
         print(magentaStr(f"\n==> Running fidder{evMsg}:"))
         protFidder = self.newProtocol(ProtFidderDetectAndEraseFiducials,
-                                      inTsSet=inTsSet)
+                                      inTsSet=inTsSet,
+                                      gpuList='0 0',
+                                      numberOfThreads=3)
         protFidder.setObjLabel(f'fidder{evLabel}')
         self.launchProtocol(protFidder)
         outTsSet = getattr(protFidder, protFidder._possibleOutputs.tiltSeries.name, None)

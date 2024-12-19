@@ -26,6 +26,7 @@
 # **************************************************************************
 import glob
 import logging
+import shutil
 from enum import Enum
 from os.path import join, basename
 from typing import Union, List
@@ -132,13 +133,11 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol):
         logger.info(cyanStr(f'===> tsId = {tsId}: Unstacking...'))
         ts = self._getInTsSet().getItem(TiltSeries.TS_ID_FIELD, tsId)
         tsFileName = ts.getFirstItem().getFileName()
-        nImgs = len(ts)
         # Create the necessary directories in tmp
         self._createTmpDirs(tsId, doEvenOdd=self.doEvenOdd.get())
         # Fidder works with individual MRC images --> the tilt-series must be un-stacked
         for i, ti in enumerate(ts.iterItems(orderBy=TiltImage.INDEX_FIELD)):
-            logger.info(cyanStr(f'======> tsId = {tsId}: unstacked image {i + 1} of {nImgs}'))
-            index = ti.getIndex()
+            index = i + 1
             self._generateUnstakedImg(tsId, tsFileName, index)
 
     def predictAndEraseFiducialMaskStep(self, tsId: str):
@@ -178,6 +177,9 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol):
             outTsSet.update(newTs)
             outTsSet.write()
             self._store(outTsSet)
+
+        # Clean the current ts folder/s in /tmp
+        shutil.rmtree(self._getTmpPath(tsId))
 
     # --------------------------- UTILS functions -----------------------------
     def _getInTsSet(self, returnPointer: bool = False) -> Union[SetOfTiltSeries, Pointer]:

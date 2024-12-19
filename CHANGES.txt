@@ -1,2 +1,5 @@
+3.0.2:
+ Users: Bug fix: re-stacked tilt-series do not fail now.
+ Developers: each tilt-series tmp directory tree is removed after the tilt-series has been processed.
 3.0.1: Update toml with the package data.
 3.0.0: First release.
