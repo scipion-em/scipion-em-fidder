@@ -30,7 +30,7 @@ from fidder.constants import FIDDER_ENV_ACTIVATION, FIDDER_DEFAULT_ACTIVATION_CM
     FIDDER_CUDA_LIB, V0_0_8, FIDDER_HOME, FIDDER_ENV_NAME
 from pyworkflow.utils import Environ
 
-__version__ = '3.0.1'
+__version__ = '3.0.2'
 _logo = "icon.png"
 # _references = ['']
 
@@ -64,7 +64,7 @@ class Plugin(pwem.Plugin):
         FIDDER_INSTALLED = '%s_%s_installed' % (FIDDER, FIDDER_DEFAULT_VERSION)
         installationCmd = cls.getCondaActivationCmd()
         # Create the environment
-        installationCmd += ' conda create -y -n %s python=3.8 && ' % FIDDER_ENV_NAME
+        installationCmd += ' conda create -y -n %s -c conda-forge python=3.8 && ' % FIDDER_ENV_NAME
 
         # Activate new the environment
         installationCmd += 'conda activate %s && ' % FIDDER_ENV_NAME
