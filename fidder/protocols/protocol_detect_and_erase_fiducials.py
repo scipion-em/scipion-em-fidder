@@ -27,6 +27,7 @@
 import glob
 import logging
 import shutil
+import time
 from enum import Enum
 from os.path import join, basename
 from typing import Union, List
@@ -40,7 +41,7 @@ from pwem.protocols import EMProtocol
 from pyworkflow.constants import BETA
 from pyworkflow.object import Set, Pointer
 from pyworkflow.protocol import PointerParam, FloatParam, GT, LE, GPU_LIST, StringParam, BooleanParam, LEVEL_ADVANCED, \
-    STEPS_PARALLEL
+    STEPS_PARALLEL, ProtStreamingBase
 from pyworkflow.utils import Message, makePath, cyanStr
 from tomo.objects import SetOfTiltSeries, TiltSeries, TiltImage
 
@@ -62,7 +63,7 @@ class fidderOutputs(Enum):
     tiltSeries = SetOfTiltSeries
 
 
-class ProtFidderDetectAndEraseFiducials(EMProtocol):
+class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtStreamingBase):
     """Fidder is a Python package for detecting and erasing gold fiducials in cryo-EM images.
     The fiducials are detected using a pre-trained residual 2D U-Net at 8 Å/px. Segmented regions are replaced
     with white noise matching the local mean and global standard deviation of the image."""
@@ -74,9 +75,14 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
+        self.itemTsIdReadList = []
         self.tsDict = None
         self.sRate = -1
         self.ih = ImageHandler()
+
+    @classmethod
+    def worksInStreaming(cls):
+        return True
 
     # --------------------------- DEFINE param functions ----------------------
     def _defineParams(self, form):
@@ -106,32 +112,65 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol):
         form.addParallelSection(threads=1, mpi=0)
 
     # --------------------------- INSERT steps functions ----------------------
-    def _insertAllSteps(self):
-        self._initialize()
+    def stepsGeneratorStep(self) -> None:
         closeSetStepDeps = []
-        for ts in self._getInTsSet().iterItems():
-            tsId = ts.getTsId()
-            cInputId = self._insertFunctionStep(self.convertInputStep, tsId,
-                                                prerequisites=[],
-                                                needsGPU=False)
-            predFidId = self._insertFunctionStep(self.predictAndEraseFiducialMaskStep, tsId,
-                                                 prerequisites=cInputId,
-                                                 needsGPU=True)
-            cOutId = self._insertFunctionStep(self.createOutputStep, tsId,
-                                              prerequisites=predFidId,
-                                              needsGPU=False)
-            closeSetStepDeps.append(cOutId)
-        self._insertFunctionStep(self._closeOutputSet,
-                                 prerequisites=closeSetStepDeps,
-                                 needsGPU=False)
+        inTsSet = self._getInTsSet()
+        self.sRate = self._getInTsSet().getSamplingRate()
+        self.readingOutput()
+
+        while True:
+            listInTsIds = inTsSet.getTSIds()
+            if not inTsSet.isStreamOpen() and self.itemTsIdReadList == listInTsIds:
+                logger.info(cyanStr('Input set closed.\n'))
+                self._insertFunctionStep(self._closeOutputSet,
+                                         prerequisites=closeSetStepDeps,
+                                         needsGPU=False)
+                break
+            for ts in inTsSet.iterItems():
+                tsId = ts.getTsId()
+                if tsId not in self.itemTsIdReadList:
+                    cInputId = self._insertFunctionStep(self.convertInputStep, tsId,
+                                                        prerequisites=[],
+                                                        needsGPU=False)
+                    predFidId = self._insertFunctionStep(self.predictAndEraseFiducialMaskStep, tsId,
+                                                         prerequisites=cInputId,
+                                                         needsGPU=True)
+                    cOutId = self._insertFunctionStep(self.createOutputStep, tsId,
+                                                      prerequisites=predFidId,
+                                                      needsGPU=False)
+                    closeSetStepDeps.append(cOutId)
+                    logger.info(cyanStr(f"Steps created for tsId = {tsId}"))
+                    self.itemTsIdReadList.append(tsId)
+            time.sleep(10)
+            if inTsSet.isStreamOpen():
+                inTsSet.loadAllProperties()  # refresh status for the streaming
+
+    # def _insertAllSteps(self):
+    #     self._initialize()
+    #     closeSetStepDeps = []
+    #     for ts in self._getInTsSet().iterItems():
+    #         tsId = ts.getTsId()
+    #         cInputId = self._insertFunctionStep(self.convertInputStep, tsId,
+    #                                             prerequisites=[],
+    #                                             needsGPU=False)
+    #         predFidId = self._insertFunctionStep(self.predictAndEraseFiducialMaskStep, tsId,
+    #                                              prerequisites=cInputId,
+    #                                              needsGPU=True)
+    #         cOutId = self._insertFunctionStep(self.createOutputStep, tsId,
+    #                                           prerequisites=predFidId,
+    #                                           needsGPU=False)
+    #         closeSetStepDeps.append(cOutId)
+    #     self._insertFunctionStep(self._closeOutputSet,
+    #                              prerequisites=closeSetStepDeps,
+    #                              needsGPU=False)
 
     # -------------------------- STEPS functions ------------------------------
-    def _initialize(self):
-        self.sRate = self._getInTsSet().getSamplingRate()
+    # def _initialize(self):
+    #     self.sRate = self._getInTsSet().getSamplingRate()
 
     def convertInputStep(self, tsId: str):
         logger.info(cyanStr(f'===> tsId = {tsId}: Unstacking...'))
-        ts = self._getInTsSet().getItem(TiltSeries.TS_ID_FIELD, tsId)
+        ts = self._getCurrentItem(tsId)
         tsFileName = ts.getFirstItem().getFileName()
         # Create the necessary directories in tmp
         self._createTmpDirs(tsId, doEvenOdd=self.doEvenOdd.get())
@@ -182,9 +221,25 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol):
         shutil.rmtree(self._getTmpPath(tsId))
 
     # --------------------------- UTILS functions -----------------------------
+    def readingOutput(self) -> None:
+        outTsSet = getattr(self, self._possibleOutputs.tiltSeries.name, None)
+        if outTsSet:
+            for item in outTsSet:
+                self.itemTsIdReadList.append(item.getTsId())
+            self.info(cyanStr(f'TsIds processed: {self.itemTsIdReadList}'))
+        else:
+            self.info(cyanStr('No tilt-series have been processed yet'))
+
     def _getInTsSet(self, returnPointer: bool = False) -> Union[SetOfTiltSeries, Pointer]:
         inTsPointer = getattr(self, IN_TS_SET)
         return inTsPointer if returnPointer else inTsPointer.get()
+
+    def _getCurrentItem(self, tsId: str, doLock: bool = True) -> TiltSeries:
+        if doLock:
+            with self._lock:
+                return self._getInTsSet().getItem(TiltSeries.TS_ID_FIELD, tsId)
+        else:
+            return self._getInTsSet().getItem(TiltSeries.TS_ID_FIELD, tsId)
 
     def _getCurrentTsTmpDir(self, tsId: str) -> str:
         return self._getTmpPath(tsId)
