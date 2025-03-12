@@ -143,7 +143,8 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtStreamingBase):
                     self.itemTsIdReadList.append(tsId)
             time.sleep(10)
             if inTsSet.isStreamOpen():
-                inTsSet.loadAllProperties()  # refresh status for the streaming
+                with self._lock:
+                    inTsSet.loadAllProperties()  # refresh status for the streaming
 
     # def _insertAllSteps(self):
     #     self._initialize()
