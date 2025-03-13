@@ -146,29 +146,7 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtStreamingBase):
                 with self._lock:
                     inTsSet.loadAllProperties()  # refresh status for the streaming
 
-    # def _insertAllSteps(self):
-    #     self._initialize()
-    #     closeSetStepDeps = []
-    #     for ts in self._getInTsSet().iterItems():
-    #         tsId = ts.getTsId()
-    #         cInputId = self._insertFunctionStep(self.convertInputStep, tsId,
-    #                                             prerequisites=[],
-    #                                             needsGPU=False)
-    #         predFidId = self._insertFunctionStep(self.predictAndEraseFiducialMaskStep, tsId,
-    #                                              prerequisites=cInputId,
-    #                                              needsGPU=True)
-    #         cOutId = self._insertFunctionStep(self.createOutputStep, tsId,
-    #                                           prerequisites=predFidId,
-    #                                           needsGPU=False)
-    #         closeSetStepDeps.append(cOutId)
-    #     self._insertFunctionStep(self._closeOutputSet,
-    #                              prerequisites=closeSetStepDeps,
-    #                              needsGPU=False)
-
     # -------------------------- STEPS functions ------------------------------
-    # def _initialize(self):
-    #     self.sRate = self._getInTsSet().getSamplingRate()
-
     def convertInputStep(self, tsId: str):
         logger.info(cyanStr(f'===> tsId = {tsId}: Unstacking...'))
         ts = self._getCurrentItem(tsId)
