@@ -128,7 +128,7 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtStreamingBase):
                 break
             for ts in inTsSet.iterItems():
                 tsId = ts.getTsId()
-                if tsId not in self.itemTsIdReadList:
+                if tsId not in self.itemTsIdReadList and ts.getSize() > 0:  # Avoid processing empty TS (before the Tis are added)
                     cInputId = self._insertFunctionStep(self.convertInputStep, tsId,
                                                         prerequisites=[],
                                                         needsGPU=False)
