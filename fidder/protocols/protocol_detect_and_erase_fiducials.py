@@ -42,7 +42,7 @@ from pyworkflow.constants import BETA
 from pyworkflow.object import Set, Pointer
 from pyworkflow.protocol import PointerParam, FloatParam, GT, LE, GPU_LIST, StringParam, BooleanParam, LEVEL_ADVANCED, \
     STEPS_PARALLEL, ProtStreamingBase
-from pyworkflow.utils import Message, makePath, cyanStr
+from pyworkflow.utils import Message, makePath, cyanStr, redStr
 from tomo.objects import SetOfTiltSeries, TiltSeries, TiltImage
 
 logger = logging.getLogger(__name__)
@@ -57,6 +57,8 @@ OUT_TS_DIR = 'results'
 EVEN_SUFFIX = '_even'
 ODD_SUFFIX = '_odd'
 MASK_SUFFIX = '_mask'
+# Other variables
+OUTPUT_TS_FAILED_NAME = "FailedTiltSeries"
 
 
 class fidderOutputs(Enum):
@@ -76,7 +78,7 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtStreamingBase):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.itemTsIdReadList = []
-        self.tsDict = None
+        self.failedItems = []
         self.sRate = -1
         self.ih = ImageHandler()
 
@@ -160,44 +162,59 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtStreamingBase):
 
     def predictAndEraseFiducialMaskStep(self, tsId: str):
         logger.info(cyanStr(f'===> tsId = {tsId}: Predicting the fiducial mask and erasing them...'))
-        self._runFidder(tsId)
-        # Odd/Even
-        if self.doEvenOdd.get():
-            self._runFidder(tsId, suffix=EVEN_SUFFIX)
-            self._runFidder(tsId, suffix=ODD_SUFFIX)
+        try:
+            self._runFidder(tsId)
+            # Odd/Even
+            if self.doEvenOdd.get():
+                self._runFidder(tsId, suffix=EVEN_SUFFIX)
+                self._runFidder(tsId, suffix=ODD_SUFFIX)
+        except Exception as e:
+            self.failedItems.append(tsId)
+            logger.error(redStr(f'Fidder execution failed for tsId {tsId} -> {e}'))
 
     def createOutputStep(self, tsId: str):
         with self._lock:
             logger.info(cyanStr(f'===> tsId = {tsId}: Creating the resulting tilt-series...'))
-            doEvenOdd = self.doEvenOdd.get()
-            if self.saveMaskStack.get():
-                # Mount the segmented stack
-                self._mountSegmentedStack(tsId)
+            inTs = self._getCurrentItem(tsId, doLock=False)
+            if tsId in self.failedItems:
+                self.createOutputFailedSet(inTs)
+                failedTs = getattr(self, OUTPUT_TS_FAILED_NAME, None)
+                if failedTs:
+                    failedTs.close()
+            else:
+                doEvenOdd = self.doEvenOdd.get()
+                if self.saveMaskStack.get():
+                    # Mount the segmented stack
+                    self._mountSegmentedStack(tsId)
 
-            # Mount the resulting tilt-series
-            tsFName, tsFnameEven, tsFnameOdd = self._mountTiltSeries(tsId, doEvenOdd=doEvenOdd)
+                # Mount the resulting tilt-series
+                tsFName, tsFnameEven, tsFnameOdd = self._mountTiltSeries(tsId, doEvenOdd=doEvenOdd)
+                outTsSet = self._getOutputTsSet()
+                newTs = TiltSeries()
+                newTs.copyInfo(inTs)
+                outTsSet.append(newTs)
 
-            inTs = self._getInTsSet().getItem(TiltSeries.TS_ID_FIELD, tsId)
-            outTsSet = self._getOutputTsSet()
-            newTs = TiltSeries()
-            newTs.copyInfo(inTs)
-            outTsSet.append(newTs)
+                for inTi in inTs.iterItems(orderBy=TiltImage.INDEX_FIELD):
+                    newTi = TiltImage()
+                    newTi.copyInfo(inTi)
+                    newTi.setFileName(tsFName)
+                    if doEvenOdd:
+                        newTi.setOddEven([tsFnameOdd, tsFnameEven])
+                    newTs.append(newTi)
 
-            for inTi in inTs.iterItems(orderBy=TiltImage.INDEX_FIELD):
-                newTi = TiltImage()
-                newTi.copyInfo(inTi)
-                newTi.setFileName(tsFName)
-                if doEvenOdd:
-                    newTi.setOddEven([tsFnameOdd, tsFnameEven])
-                newTs.append(newTi)
-
-            newTs.write()
-            outTsSet.update(newTs)
-            outTsSet.write()
-            self._store(outTsSet)
+                newTs.write()
+                outTsSet.update(newTs)
+                outTsSet.write()
+                self._store(outTsSet)
+                for outputName in self._possibleOutputs:
+                    output = getattr(self, outputName.name, None)
+                    if output:
+                        output.close()
 
         # Clean the current ts folder/s in /tmp
-        shutil.rmtree(self._getTmpPath(tsId))
+        tsIdTmpDir = self._getTmpPath(tsId)
+        if tsIdTmpDir:
+            shutil.rmtree(tsIdTmpDir)
 
     # --------------------------- UTILS functions -----------------------------
     def readingOutput(self) -> None:
@@ -372,6 +389,41 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtStreamingBase):
                                                              suffix=ODD_SUFFIX)
 
         return resultingTsFileName, resultingTsFileNameEven, resultingTsFileNameOdd
+
+    def createOutputFailedSet(self, item):
+        """ Just copy input item to the failed output set. """
+        logger.info(f'Failed TS ---> {item.getTsId()}')
+        inputSetPointer = self._getInTsSet(returnPointer=True)
+        output = self.getOutputFailedSet(inputSetPointer)
+        newItem = item.clone()
+        newItem.copyInfo(item)
+        output.append(newItem)
+
+        if isinstance(item, TiltSeries):
+            newItem.copyItems(item)
+            newItem.write(properties=False)
+
+        output.update(newItem)
+        output.write()
+        self._store(output)
+
+    def getOutputFailedSet(self, inputPtr: Pointer):
+        """ Create output set for failed TS or tomograms. """
+        inputSet = inputPtr.get()
+        if isinstance(inputSet, SetOfTiltSeries):
+            failedTs = getattr(self, OUTPUT_TS_FAILED_NAME, None)
+
+            if failedTs:
+                failedTs.enableAppend()
+            else:
+                logger.info('Create the set of failed TS')
+                failedTs = SetOfTiltSeries.create(self._getPath(), template='tiltseries', suffix='Failed')
+                failedTs.copyInfo(inputSet)
+                failedTs.setStreamState(Set.STREAM_OPEN)
+                self._defineOutputs(**{OUTPUT_TS_FAILED_NAME: failedTs})
+                self._defineSourceRelation(inputPtr, failedTs)
+
+            return failedTs
 
     # --------------------------- INFO functions ------------------------------
     def _validate(self) -> List[str]:
