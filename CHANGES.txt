@@ -1,3 +1,4 @@
+3.1.0: Streamified.
 3.0.2:
  Users: Bug fix: re-stacked tilt-series do not fail now.
  Developers: each tilt-series tmp directory tree is removed after the tilt-series has been processed.
