@@ -283,40 +283,40 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtStreamingBase):
             dirList.extend(evenOdddirList)
         makePath(*dirList)
 
-    def _getPredictArgs(self, inImage: str, outMask: str) -> str:
+    def _getPredictArgs(self, inImgsFolder: str, outMasksFolder: str) -> str:
         cmd = [
-            'predict',
-            f'--input-image {inImage}',
-            f'--output-mask {outMask}',
+            'predict_batch',
+            f'--input-image {inImgsFolder}',
+            f'--output-mask {outMasksFolder}',
             f'--pixel-spacing {self.sRate:.3f}',
             f'--probability-threshold {getattr(self, PROB_THRESHOLD).get():.2f}'
         ]
         return ' '.join(cmd)
 
     @staticmethod
-    def _getEraseFidArgs(inImage: str, maskedImage: str, outImage: str) -> str:
+    def _getEraseFidArgs(inImgsFolder: str, inMaskedImgsFolder: str, outImgsFolder: str) -> str:
         cmd = [
-            'erase',
-            f'--input-image {inImage}',
-            f'--input-mask {maskedImage}',
-            f'--output-image {outImage}'
+            'erase_batch',
+            f'--input-images-folder {inImgsFolder}',
+            f'--input-masks-folder {inMaskedImgsFolder}',
+            f'--output-images-folder {outImgsFolder}'
         ]
         return ' '.join(cmd)
 
     def _runFidder(self, tsId: str, suffix: str = ''):
         imagesList = glob.glob(join(self._getUnstackedImgsDir(tsId, suffix=suffix), '*' + MRC))
         nImgs = len(imagesList)
-        for i, inImage in enumerate(sorted(imagesList)):
-            logger.info(cyanStr(f'======> tsId = {tsId}{suffix}: processing image {i + 1} of {nImgs}'))
-            outImgMask = self._getOutputMaskFileName(tsId, inImage)
-            outResultImg = self._getOutputImgFileName(tsId, inImage, suffix=suffix)
-            # Predict: only for the whole TS
-            if not suffix:
-                args = self._getPredictArgs(inImage, outImgMask)
-                Plugin.runFidder(self, args)
-            # Erase: do always this part, no matter if it's the whole TS, the even or the odd
-            args = self._getEraseFidArgs(inImage, outImgMask, outResultImg)
+        logger.info(cyanStr(f'======> Processing images from tsId = {tsId}{suffix}'))
+        inImgsFolder = self._getUnstackedImgsDir(tsId, suffix=suffix)
+        ImgMasksFolder = self._getUnstackedMasksDir(tsId, suffix=suffix)
+        outResultImgsFolder = self._getUnstackedErasedImgsDir(tsId, suffix=suffix)
+        # Predict: only for the whole TS
+        if not suffix:
+            args = self._getPredictArgs(inImgsFolder, ImgMasksFolder)
             Plugin.runFidder(self, args)
+        # Erase in all images: even, odd and whole TS
+        args = self._getEraseFidArgs(inImgsFolder, ImgMasksFolder, outResultImgsFolder)
+        Plugin.runFidder(self, args)
 
     def _generateUnstackedImg(self, tsId: str, tsFileName: str, index: int, suffix: str = '') -> None:
         newTiFileName = self._getNewTiTmpFileName(tsId, index, suffix=suffix)
