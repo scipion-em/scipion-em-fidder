@@ -158,7 +158,7 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtStreamingBase):
         # Fidder works with individual MRC images --> the tilt-series must be un-stacked
         for i, ti in enumerate(ts.iterItems(orderBy=TiltImage.INDEX_FIELD)):
             index = i + 1
-            self._generateUnstakedImg(tsId, tsFileName, index)
+            self._generateUnstackedImg(tsId, tsFileName, index)
 
     def predictAndEraseFiducialMaskStep(self, tsId: str):
         logger.info(cyanStr(f'===> tsId = {tsId}: Predicting the fiducial mask and erasing them...'))
@@ -318,7 +318,7 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtStreamingBase):
             args = self._getEraseFidArgs(inImage, outImgMask, outResultImg)
             Plugin.runFidder(self, args)
 
-    def _generateUnstakedImg(self, tsId: str, tsFileName: str, index: int, suffix: str = '') -> None:
+    def _generateUnstackedImg(self, tsId: str, tsFileName: str, index: int, suffix: str = '') -> None:
         newTiFileName = self._getNewTiTmpFileName(tsId, index, suffix=suffix)
         tiFName = f'{index}@{tsFileName}:mrcs'
         self.ih.convert(tiFName, newTiFileName, DT_FLOAT)
