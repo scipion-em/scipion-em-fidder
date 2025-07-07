@@ -1,3 +1,5 @@
+3.1.1: Bump Fidder version to 0.0.9
+ Performance increased by using new batch & cache functions for each TS instead of one call per TS image
 3.1.0: Streamified.
 3.0.2:
  Users: Bug fix: re-stacked tilt-series do not fail now.
