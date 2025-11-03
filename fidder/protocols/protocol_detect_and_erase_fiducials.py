@@ -30,7 +30,7 @@ import shutil
 import time
 from enum import Enum
 from os.path import join, basename
-from typing import Union, List
+from typing import Union, List, Counter
 import mrcfile
 import numpy as np
 from typing_extensions import Tuple
@@ -38,7 +38,6 @@ from fidder import Plugin
 from pwem.emlib import DT_FLOAT
 from pwem.emlib.image import ImageHandler
 from pwem.protocols import EMProtocol
-from pyworkflow.constants import BETA
 from pyworkflow.object import Set, Pointer
 from pyworkflow.protocol import PointerParam, FloatParam, GT, LE, GPU_LIST, StringParam, BooleanParam, LEVEL_ADVANCED, \
     STEPS_PARALLEL, ProtStreamingBase
@@ -71,7 +70,6 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtStreamingBase):
     with white noise matching the local mean and global standard deviation of the image."""
 
     _label = 'detect and erase fiducials'
-    _devStatus = BETA
     _possibleOutputs = fidderOutputs
     stepsExecutionMode = STEPS_PARALLEL
 
@@ -122,7 +120,10 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtStreamingBase):
 
         while True:
             listInTsIds = inTsSet.getTSIds()
-            if not inTsSet.isStreamOpen() and self.itemTsIdReadList == listInTsIds:
+            # In the if statement below, Counter is used because in the tsId comparison the order doesn’t matter
+            # but duplicates do. With a direct comparison, the closing step may not be inserted because of the order:
+            # ['ts_a', 'ts_b'] != ['ts_b', 'ts_a'], but they are the same with Counter.
+            if not inTsSet.isStreamOpen() and Counter(self.itemTsIdReadList) == Counter(listInTsIds):
                 logger.info(cyanStr('Input set closed.\n'))
                 self._insertFunctionStep(self._closeOutputSet,
                                          prerequisites=closeSetStepDeps,
