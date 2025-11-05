@@ -119,7 +119,8 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtStreamingBase):
         self.readingOutput()
 
         while True:
-            listInTsIds = inTsSet.getTSIds()
+            with self._lock:
+                listInTsIds = inTsSet.getTSIds()
             # In the if statement below, Counter is used because in the tsId comparison the order doesn’t matter
             # but duplicates do. With a direct comparison, the closing step may not be inserted because of the order:
             # ['ts_a', 'ts_b'] != ['ts_b', 'ts_a'], but they are the same with Counter.
