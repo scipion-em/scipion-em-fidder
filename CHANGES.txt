@@ -1,3 +1,9 @@
+3.1.1:
+ Users:
+  - Remove the BETA status.
+ Developers:
+  - Fix streaming condition to insert the closing step. Now it uses collections.Counter when comparing
+    the tsId lists instead of direct comparison, which is order-sensitive.
 3.1.0: Streamified.
 3.0.2:
  Users: Bug fix: re-stacked tilt-series do not fail now.

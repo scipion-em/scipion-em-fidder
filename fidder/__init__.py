@@ -30,7 +30,7 @@ from fidder.constants import FIDDER_ENV_ACTIVATION, FIDDER_DEFAULT_ACTIVATION_CM
     FIDDER_CUDA_LIB, V0_0_8, FIDDER_HOME, FIDDER_ENV_NAME
 from pyworkflow.utils import Environ
 
-__version__ = '3.1.0'
+__version__ = '3.1.1'
 _logo = "icon.png"
 # _references = ['']
 
