@@ -282,10 +282,14 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtStreamingBase):
                    masksDir,
                    outImgsDir]
         if doEvenOdd:
+            inImgsDirEven = self._getUnstackedImgsDir(tsId, suffix=EVEN_SUFFIX)
+            inImgsDirOdd = self._getUnstackedImgsDir(tsId, suffix=ODD_SUFFIX)
             outImgsDirEven = self._getUnstackedErasedImgsDir(tsId, suffix=EVEN_SUFFIX)
             outImgsDirOdd = self._getUnstackedErasedImgsDir(tsId, suffix=ODD_SUFFIX)
             evenOdddirList = [outImgsDirEven,
-                              outImgsDirOdd]
+                              outImgsDirOdd,
+                              inImgsDirEven,
+                              inImgsDirOdd]
             dirList.extend(evenOdddirList)
         makePath(*dirList)
 
