@@ -161,6 +161,10 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtStreamingBase):
         for i, ti in enumerate(ts.iterItems(orderBy=TiltImage.INDEX_FIELD)):
             index = i + 1
             self._generateUnstakedImg(tsId, tsFileName, index)
+            # Odd/Even
+            if self.doEvenOdd.get():
+                self._generateUnstakedImg(tsId, tsFileName, index, suffix=EVEN_SUFFIX)
+                self._generateUnstakedImg(tsId, tsFileName, index, suffix=ODD_SUFFIX)
 
     def predictAndEraseFiducialMaskStep(self, tsId: str):
         logger.info(cyanStr(f'===> tsId = {tsId}: Predicting the fiducial mask and erasing them...'))
@@ -278,10 +282,14 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtStreamingBase):
                    masksDir,
                    outImgsDir]
         if doEvenOdd:
+            inImgsDirEven = self._getUnstackedImgsDir(tsId, suffix=EVEN_SUFFIX)
+            inImgsDirOdd = self._getUnstackedImgsDir(tsId, suffix=ODD_SUFFIX)
             outImgsDirEven = self._getUnstackedErasedImgsDir(tsId, suffix=EVEN_SUFFIX)
             outImgsDirOdd = self._getUnstackedErasedImgsDir(tsId, suffix=ODD_SUFFIX)
             evenOdddirList = [outImgsDirEven,
-                              outImgsDirOdd]
+                              outImgsDirOdd,
+                              inImgsDirEven,
+                              inImgsDirOdd]
             dirList.extend(evenOdddirList)
         makePath(*dirList)
 
