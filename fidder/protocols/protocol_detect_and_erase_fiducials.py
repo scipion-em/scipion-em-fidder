@@ -122,10 +122,6 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtStreamingBase):
         while True:
             with self._lock:
                 inTsIds = set(inTsSet.getTSIds())
-                nonProcessedTsIds = inTsIds - set(self.itemTsIdReadList)
-                tsToProcessDict = {tsId: ts.clone() for ts in inTsSet.iterItems()
-                                   if (tsId := ts.getTsId()) in nonProcessedTsIds  # Only not processed tsIds
-                                   and ts.getSize() > 0}  # Avoid processing empty TS
 
             # In the if statement below, Counter is used because in the tsId comparison the order doesn’t matter
             # but duplicates do. With a direct comparison, the closing step may not be inserted because of the order:
@@ -137,6 +133,10 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtStreamingBase):
                                          needsGPU=False)
                 break
 
+            nonProcessedTsIds = inTsIds - set(self.itemTsIdReadList)
+            tsToProcessDict = {tsId: ts.clone() for ts in inTsSet.iterItems()
+                               if (tsId := ts.getTsId()) in nonProcessedTsIds  # Only not processed tsIds
+                               and ts.getSize() > 0}  # Avoid processing empty TS
             for tsId, ts in tsToProcessDict.items():
                 cInputId = self._insertFunctionStep(self.convertInputStep, ts,
                                                     prerequisites=[],
