@@ -42,6 +42,7 @@ from pyworkflow.object import Set, Pointer
 from pyworkflow.protocol import PointerParam, FloatParam, GT, LE, GPU_LIST, StringParam, BooleanParam, LEVEL_ADVANCED, \
     STEPS_PARALLEL, ProtStreamingBase
 from pyworkflow.utils import Message, makePath, cyanStr, redStr
+from pyworkflow.utils.retry_streaming import retry_on_sqlite_lock
 from tomo.objects import SetOfTiltSeries, TiltSeries, TiltImage
 
 logger = logging.getLogger(__name__)
@@ -120,40 +121,45 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtStreamingBase):
 
         while True:
             with self._lock:
-                listInTsIds = inTsSet.getTSIds()
+                inTsIds = set(inTsSet.getTSIds())
+
             # In the if statement below, Counter is used because in the tsId comparison the order doesn’t matter
             # but duplicates do. With a direct comparison, the closing step may not be inserted because of the order:
             # ['ts_a', 'ts_b'] != ['ts_b', 'ts_a'], but they are the same with Counter.
-            if not inTsSet.isStreamOpen() and Counter(self.itemTsIdReadList) == Counter(listInTsIds):
+            if not inTsSet.isStreamOpen() and Counter(self.itemTsIdReadList) == Counter(inTsIds):
                 logger.info(cyanStr('Input set closed.\n'))
                 self._insertFunctionStep(self._closeOutputSet,
                                          prerequisites=closeSetStepDeps,
                                          needsGPU=False)
                 break
-            for ts in inTsSet.iterItems():
-                tsId = ts.getTsId()
-                if tsId not in self.itemTsIdReadList and ts.getSize() > 0:  # Avoid processing empty TS (before the Tis are added)
-                    cInputId = self._insertFunctionStep(self.convertInputStep, tsId,
-                                                        prerequisites=[],
-                                                        needsGPU=False)
-                    predFidId = self._insertFunctionStep(self.predictAndEraseFiducialMaskStep, tsId,
-                                                         prerequisites=cInputId,
-                                                         needsGPU=True)
-                    cOutId = self._insertFunctionStep(self.createOutputStep, tsId,
-                                                      prerequisites=predFidId,
-                                                      needsGPU=False)
-                    closeSetStepDeps.append(cOutId)
-                    logger.info(cyanStr(f"Steps created for tsId = {tsId}"))
-                    self.itemTsIdReadList.append(tsId)
+
+            nonProcessedTsIds = inTsIds - set(self.itemTsIdReadList)
+            tsToProcessDict = {tsId: ts.clone() for ts in inTsSet.iterItems()
+                               if (tsId := ts.getTsId()) in nonProcessedTsIds  # Only not processed tsIds
+                               and ts.getSize() > 0}  # Avoid processing empty TS
+            for tsId, ts in tsToProcessDict.items():
+                cInputId = self._insertFunctionStep(self.convertInputStep, ts,
+                                                    prerequisites=[],
+                                                    needsGPU=False)
+                predFidId = self._insertFunctionStep(self.predictAndEraseFiducialMaskStep, tsId,
+                                                     prerequisites=cInputId,
+                                                     needsGPU=True)
+                cOutId = self._insertFunctionStep(self.createOutputStep, ts,
+                                                  prerequisites=predFidId,
+                                                  needsGPU=False)
+                closeSetStepDeps.append(cOutId)
+                logger.info(cyanStr(f"Steps created for tsId = {tsId}"))
+                self.itemTsIdReadList.append(tsId)
+
             time.sleep(10)
             if inTsSet.isStreamOpen():
                 with self._lock:
                     inTsSet.loadAllProperties()  # refresh status for the streaming
 
     # -------------------------- STEPS functions ------------------------------
-    def convertInputStep(self, tsId: str):
+    def convertInputStep(self, ts: TiltSeries):
+        tsId = ts.getTsId()
         logger.info(cyanStr(f'===> tsId = {tsId}: Unstacking...'))
-        ts = self._getCurrentItem(tsId)
         tsFileName = ts.getFirstItem().getFileName()
         # Create the necessary directories in tmp
         self._createTmpDirs(tsId, doEvenOdd=self.doEvenOdd.get())
@@ -161,6 +167,10 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtStreamingBase):
         for i, ti in enumerate(ts.iterItems(orderBy=TiltImage.INDEX_FIELD)):
             index = i + 1
             self._generateUnstakedImg(tsId, tsFileName, index)
+            # Odd/Even
+            if self.doEvenOdd.get():
+                self._generateUnstakedImg(tsId, tsFileName, index, suffix=EVEN_SUFFIX)
+                self._generateUnstakedImg(tsId, tsFileName, index, suffix=ODD_SUFFIX)
 
     def predictAndEraseFiducialMaskStep(self, tsId: str):
         logger.info(cyanStr(f'===> tsId = {tsId}: Predicting the fiducial mask and erasing them...'))
@@ -174,49 +184,53 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtStreamingBase):
             self.failedItems.append(tsId)
             logger.error(redStr(f'Fidder execution failed for tsId {tsId} -> {e}'))
 
-    def createOutputStep(self, tsId: str):
-        with self._lock:
-            logger.info(cyanStr(f'===> tsId = {tsId}: Creating the resulting tilt-series...'))
-            inTs = self._getCurrentItem(tsId, doLock=False)
-            if tsId in self.failedItems:
-                self.createOutputFailedSet(inTs)
-                failedTs = getattr(self, OUTPUT_TS_FAILED_NAME, None)
-                if failedTs:
-                    failedTs.close()
-            else:
-                doEvenOdd = self.doEvenOdd.get()
-                if self.saveMaskStack.get():
-                    # Mount the segmented stack
-                    self._mountSegmentedStack(tsId)
+    def createOutputStep(self, inTs: TiltSeries):
+        tsId = inTs.getTsId()
+        logger.info(cyanStr(f'===> tsId = {tsId}: Creating the resulting tilt-series...'))
+        if tsId in self.failedItems:
+            self.createOutputFailedSet(inTs)
+            return
 
-                # Mount the resulting tilt-series
-                tsFName, tsFnameEven, tsFnameOdd = self._mountTiltSeries(tsId, doEvenOdd=doEvenOdd)
-                outTsSet = self._getOutputTsSet()
-                newTs = TiltSeries()
-                newTs.copyInfo(inTs)
-                outTsSet.append(newTs)
-
-                for inTi in inTs.iterItems(orderBy=TiltImage.INDEX_FIELD):
-                    newTi = TiltImage()
-                    newTi.copyInfo(inTi)
-                    newTi.setFileName(tsFName)
-                    if doEvenOdd:
-                        newTi.setOddEven([tsFnameOdd, tsFnameEven])
-                    newTs.append(newTi)
-
-                newTs.write()
-                outTsSet.update(newTs)
-                outTsSet.write()
-                self._store(outTsSet)
-                for outputName in self._possibleOutputs:
-                    output = getattr(self, outputName.name, None)
-                    if output:
-                        output.close()
+        if self.saveMaskStack.get():
+            # Mount the segmented stack
+            self._mountSegmentedStack(tsId)
+        tsFName, tsFnameEven, tsFnameOdd = self._mountTiltSeries(tsId, doEvenOdd=self.doEvenOdd.get())
+        self._registerOutput(inTs, tsFName, tsFnameEven, tsFnameOdd)
 
         # Clean the current ts folder/s in /tmp
         tsIdTmpDir = self._getTmpPath(tsId)
         if tsIdTmpDir:
             shutil.rmtree(tsIdTmpDir)
+
+    @retry_on_sqlite_lock(log=logger)
+    def _registerOutput(self,
+                        inTs: TiltSeries,
+                        tsFName: str,
+                        tsFnameEven: str,
+                        tsFnameOdd: str):
+        with self._lock:
+            # Mount the resulting tilt-series
+            outTsSet = self._getOutputTsSet()
+            newTs = TiltSeries()
+            newTs.copyInfo(inTs)
+            outTsSet.append(newTs)
+
+            for inTi in inTs.iterItems(orderBy=TiltImage.INDEX_FIELD):
+                newTi = TiltImage()
+                newTi.copyInfo(inTi)
+                newTi.setFileName(tsFName)
+                if self.doEvenOdd.get():
+                    newTi.setOddEven([tsFnameOdd, tsFnameEven])
+                newTs.append(newTi)
+
+            newTs.write()
+            outTsSet.update(newTs)
+            outTsSet.write()
+            self._store(outTsSet)
+            for outputName in self._possibleOutputs:
+                output = getattr(self, outputName.name, None)
+                if output:
+                    output.close()
 
     # --------------------------- UTILS functions -----------------------------
     def readingOutput(self) -> None:
@@ -231,13 +245,6 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtStreamingBase):
     def _getInTsSet(self, returnPointer: bool = False) -> Union[SetOfTiltSeries, Pointer]:
         inTsPointer = getattr(self, IN_TS_SET)
         return inTsPointer if returnPointer else inTsPointer.get()
-
-    def _getCurrentItem(self, tsId: str, doLock: bool = True) -> TiltSeries:
-        if doLock:
-            with self._lock:
-                return self._getInTsSet().getItem(TiltSeries.TS_ID_FIELD, tsId)
-        else:
-            return self._getInTsSet().getItem(TiltSeries.TS_ID_FIELD, tsId)
 
     def _getCurrentTsTmpDir(self, tsId: str) -> str:
         return self._getTmpPath(tsId)
@@ -278,10 +285,14 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtStreamingBase):
                    masksDir,
                    outImgsDir]
         if doEvenOdd:
+            inImgsDirEven = self._getUnstackedImgsDir(tsId, suffix=EVEN_SUFFIX)
+            inImgsDirOdd = self._getUnstackedImgsDir(tsId, suffix=ODD_SUFFIX)
             outImgsDirEven = self._getUnstackedErasedImgsDir(tsId, suffix=EVEN_SUFFIX)
             outImgsDirOdd = self._getUnstackedErasedImgsDir(tsId, suffix=ODD_SUFFIX)
             evenOdddirList = [outImgsDirEven,
-                              outImgsDirOdd]
+                              outImgsDirOdd,
+                              inImgsDirEven,
+                              inImgsDirOdd]
             dirList.extend(evenOdddirList)
         makePath(*dirList)
 
@@ -392,22 +403,27 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtStreamingBase):
 
         return resultingTsFileName, resultingTsFileNameEven, resultingTsFileNameOdd
 
-    def createOutputFailedSet(self, item):
+    @retry_on_sqlite_lock(log=logger)
+    def createOutputFailedSet(self, item: TiltSeries):
         """ Just copy input item to the failed output set. """
-        logger.info(f'Failed TS ---> {item.getTsId()}')
-        inputSetPointer = self._getInTsSet(returnPointer=True)
-        output = self.getOutputFailedSet(inputSetPointer)
-        newItem = item.clone()
-        newItem.copyInfo(item)
-        output.append(newItem)
+        with self._lock:
+            logger.info(f'Failed TS ---> {item.getTsId()}')
+            inputSetPointer = self._getInTsSet(returnPointer=True)
+            output = self.getOutputFailedSet(inputSetPointer)
+            newItem = item.clone()
+            newItem.copyInfo(item)
+            output.append(newItem)
 
-        if isinstance(item, TiltSeries):
-            newItem.copyItems(item)
-            newItem.write(properties=False)
+            if isinstance(item, TiltSeries):
+                newItem.copyItems(item)
+                newItem.write(properties=False)
 
-        output.update(newItem)
-        output.write()
-        self._store(output)
+            output.update(newItem)
+            output.write()
+            self._store(output)
+
+            # Close explicitly the outputs (for streaming)
+            output.close()
 
     def getOutputFailedSet(self, inputPtr: Pointer):
         """ Create output set for failed TS or tomograms. """
@@ -426,6 +442,7 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtStreamingBase):
                 self._defineSourceRelation(inputPtr, failedTs)
 
             return failedTs
+        return None
 
     # --------------------------- INFO functions ------------------------------
     def _validate(self) -> List[str]:
