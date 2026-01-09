@@ -4,13 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "scipion-em-fidder"
-dynamic = ["version"]
+dynamic = ["version", "dependencies"]
 description = "Plugin to use fidder within the Scipion framework"
 authors = [
     {name = "Scipion Team", email = "scipion@cnb.csic.es"}
-]
-dependencies = [
-    "scipion-em-tomo>=3.9.1",
 ]
 requires-python = ">=3.8"
 readme = "README.rst"
@@ -31,6 +28,7 @@ Issues = "https://github.com/scipion-em/scipion-em-fidder/issues"
 
 [tool.setuptools.dynamic]
 version = {attr = "fidder.__version__"}
+dependencies = {file = ["requirements.txt"]}
 
 [tool.setuptools.package-data]
 "fidder" = ["protocols.conf", "icon.png", "templates/*"]
