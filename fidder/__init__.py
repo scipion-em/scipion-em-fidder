@@ -32,7 +32,7 @@ from fidder.constants import FIDDER_ENV_ACTIVATION, FIDDER_DEFAULT_ACTIVATION_CM
 from pyworkflow import TOMO
 from pyworkflow.utils import Environ
 
-__version__ = '3.2.0'
+__version__ = '3.2.1'
 _logo = "icon.png"
 # _references = ['']
 
