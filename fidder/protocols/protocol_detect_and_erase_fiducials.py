@@ -428,21 +428,19 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtStreamingBase):
     def getOutputFailedSet(self, inputPtr: Pointer):
         """ Create output set for failed TS or tomograms. """
         inputSet = inputPtr.get()
-        if isinstance(inputSet, SetOfTiltSeries):
-            failedTs = getattr(self, OUTPUT_TS_FAILED_NAME, None)
+        failedTs = getattr(self, OUTPUT_TS_FAILED_NAME, None)
 
-            if failedTs:
-                failedTs.enableAppend()
-            else:
-                logger.info('Create the set of failed TS')
-                failedTs = SetOfTiltSeries.create(self._getPath(), template='tiltseries', suffix='Failed')
-                failedTs.copyInfo(inputSet)
-                failedTs.setStreamState(Set.STREAM_OPEN)
-                self._defineOutputs(**{OUTPUT_TS_FAILED_NAME: failedTs})
-                self._defineSourceRelation(inputPtr, failedTs)
+        if failedTs:
+            failedTs.enableAppend()
+        else:
+            logger.info(cyanStr('Create the set of failed TS'))
+            failedTs = SetOfTiltSeries.create(self._getPath(), template='tiltseries', suffix='Failed')
+            failedTs.copyInfo(inputSet)
+            failedTs.setStreamState(Set.STREAM_OPEN)
+            self._defineOutputs(**{OUTPUT_TS_FAILED_NAME: failedTs})
+            self._defineSourceRelation(inputPtr, failedTs)
 
-            return failedTs
-        return None
+        return failedTs
 
     # --------------------------- INFO functions ------------------------------
     def _validate(self) -> List[str]:
