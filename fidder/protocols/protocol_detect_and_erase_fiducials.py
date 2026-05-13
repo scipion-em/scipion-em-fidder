@@ -66,9 +66,159 @@ class fidderOutputs(Enum):
 
 
 class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtStreamingBase):
-    """Fidder is a Python package for detecting and erasing gold fiducials in cryo-EM images.
-    The fiducials are detected using a pre-trained residual 2D U-Net at 8 Å/px. Segmented regions are replaced
-    with white noise matching the local mean and global standard deviation of the image."""
+    """
+    Detects and removes gold fiducials from cryo-EM tilt-series using a
+    deep learning segmentation approach. The protocol identifies fiducial
+    markers in individual projection images and replaces them with
+    statistically consistent image content in order to reduce fiducial-related
+    artifacts during downstream tomographic processing.
+
+    AI Generated:
+
+    Detect and Erase Fiducials (ProtFidderDetectAndEraseFiducials) — User Manual
+        Overview
+
+        The Detect and Erase Fiducials protocol is designed to improve the
+        quality of cryo-electron tomography tilt-series by automatically
+        identifying and removing gold fiducial markers from projection images.
+        Fiducials are commonly introduced during sample preparation to support
+        tilt-series alignment, but in some workflows they become undesirable
+        because they interfere with visualization, segmentation, denoising,
+        subtomogram averaging, or machine learning analyses.
+
+        The protocol uses a trained deep learning model specialized for
+        fiducial detection in cryo-EM data. After identifying fiducial regions,
+        those regions are replaced with image content that statistically matches
+        the surrounding signal characteristics. The resulting images preserve
+        the overall appearance and noise distribution of the original data while
+        minimizing the disruptive influence of fiducials.
+
+        In practical biological workflows, this protocol is especially useful
+        when fiducials overlap with membranes, protein complexes, filaments, or
+        other regions of interest that need to be interpreted structurally. By
+        suppressing fiducial artifacts, downstream visualization and analysis
+        become cleaner and easier to interpret.
+
+        Streaming Processing and Workflow Integration
+
+        The protocol is designed to operate in streaming mode, making it
+        suitable for facility environments and automated cryo-ET pipelines.
+        Tilt-series can be processed incrementally as they become available,
+        allowing fiducial removal to occur in parallel with data acquisition or
+        preprocessing.
+
+        This capability is particularly valuable in high-throughput cryo-ET
+        projects where large numbers of tilt-series are generated continuously.
+        Biological users benefit from reduced waiting times and earlier access
+        to cleaned datasets suitable for inspection or further reconstruction.
+
+        The workflow processes each tilt-series independently. Projection images
+        are temporarily separated into individual frames, fiducials are
+        detected and erased, and the cleaned images are then reassembled into a
+        new tilt-series preserving the original acquisition order and metadata.
+
+        Fiducial Detection Sensitivity
+
+        One of the central parameters in this protocol is the fiducial
+        probability threshold. This value controls how confidently image
+        regions must resemble fiducials before they are considered for removal.
+
+        Lower thresholds increase sensitivity and may detect weaker or partially
+        obscured fiducials, which can be beneficial in noisy datasets or when
+        fiducials have low contrast. However, excessively permissive thresholds
+        may incorrectly classify biological densities or contamination as
+        fiducials, potentially removing meaningful structural information.
+
+        Higher thresholds are more conservative and reduce the risk of false
+        positives, but they may fail to erase faint fiducials completely. In
+        most biological workflows, intermediate values provide a good balance
+        between reliable detection and preservation of specimen signal.
+
+        Biological users are encouraged to visually inspect representative
+        projections after processing to ensure that fiducials are removed while
+        relevant structural features remain intact.
+
+        Handling of Even and Odd Tilt-Series
+
+        The protocol optionally supports independent processing of even and odd
+        tilt-series. This functionality is important in workflows involving
+        independent half-set reconstructions, resolution estimation, or
+        denoising strategies that rely on statistically independent datasets.
+
+        When enabled, fiducial removal is applied consistently to the full,
+        even, and odd datasets. This helps maintain compatibility with advanced
+        reconstruction pipelines while ensuring that fiducial artifacts do not
+        propagate differently between half datasets.
+
+        Care should be taken to ensure that valid even and odd metadata are
+        available before enabling this option. Maintaining consistency between
+        half datasets is particularly important for downstream quantitative
+        analyses and resolution validation.
+
+        Segmentation Masks and Quality Assessment
+
+        The protocol can optionally preserve the fiducial segmentation masks
+        generated during detection. These masks provide a useful quality control
+        resource because they allow users to inspect which regions were
+        classified as fiducials.
+
+        In biological practice, reviewing the masks is recommended when working
+        with unusual specimens, dense cellular environments, or contaminated
+        grids where the distinction between fiducials and biological material
+        may become ambiguous.
+
+        The masks may also be useful for methodological benchmarking, machine
+        learning dataset preparation, or developing customized preprocessing
+        workflows.
+
+        Outputs and Their Interpretation
+
+        After processing, the protocol produces cleaned tilt-series in which
+        fiducials have been removed while preserving the original geometric and
+        acquisition information. The resulting datasets can be used directly in
+        tomographic reconstruction, visualization, segmentation, or subtomogram
+        analysis workflows.
+
+        If enabled, corresponding even and odd tilt-series are also generated.
+        Optional segmentation mask stacks may additionally be stored for
+        inspection and validation purposes.
+
+        In cases where processing fails for a particular tilt-series, the
+        protocol preserves those datasets separately so they can be reviewed and
+        potentially reprocessed later. This behavior is especially useful in
+        automated streaming environments where uninterrupted pipeline execution
+        is important.
+
+        Practical Recommendations
+
+        In routine cryo-ET preprocessing, it is generally advisable to begin
+        with the default probability threshold and visually inspect a subset of
+        projections before processing large datasets. Most standard fiducial
+        datasets are handled effectively without extensive parameter tuning.
+
+        Users working with crowded cellular tomograms, thick specimens, or
+        unusually noisy data may need to adjust the threshold carefully to
+        avoid accidental removal of biological densities. Conservative settings
+        are often preferable when fiducials are sparse or weakly contrasted.
+
+        Saving the segmentation masks is recommended during optimization or
+        validation stages, particularly when introducing the protocol into a
+        new acquisition pipeline. Once stable parameters are identified, mask
+        storage may be disabled to reduce storage requirements.
+
+        Final Perspective
+
+        Fiducial removal is not merely a cosmetic preprocessing step. In many
+        cryo-electron tomography workflows, fiducials can strongly influence
+        visualization quality, automated segmentation, denoising behavior, and
+        quantitative interpretation. Reliable suppression of fiducial artifacts
+        therefore contributes directly to cleaner biological interpretation and
+        more robust downstream analyses.
+
+        By combining automated deep learning detection with streaming-aware
+        processing, this protocol provides a practical solution for preparing
+        cleaner tomographic datasets suitable for modern cryo-ET workflows.
+    """
 
     _label = 'detect and erase fiducials'
     _possibleOutputs = fidderOutputs
