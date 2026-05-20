@@ -27,15 +27,17 @@
 from typing import Union
 
 from fidder.protocols import ProtFidderDetectAndEraseFiducials
-from imod.constants import OUTPUT_TILTSERIES_NAME
-from imod.protocols import ProtImodTsNormalization, ProtImodImportTransformationMatrix
 from pwem import ALIGN_2D
 from pyworkflow.tests import setupTestProject, DataSet
-from pyworkflow.utils import cyanStr, magentaStr
+from pyworkflow.utils import cyanStr, magentaStr, weakImport
 from tomo.objects import SetOfTiltSeries
 from tomo.protocols import ProtImportTs, ProtImportTsBase
 from tomo.tests import RE4_STA_TUTO, DataSetRe4STATuto, TS_03, TS_54
 from tomo.tests.test_base_centralized_layer import TestBaseCentralizedLayer
+
+with weakImport("imod"):
+    from imod.constants import OUTPUT_TILTSERIES_NAME
+    from imod.protocols import ProtImodTsNormalization, ProtImodImportTransformationMatrix
 
 
 class TestFidder(TestBaseCentralizedLayer):
