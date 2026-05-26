@@ -259,7 +259,7 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtStreamingBase):
         return join(self._getCurrentTsTmpDir(tsId), 'unstackedResults' + suffix)
 
     def _getOutputMaskFileName(self, tsId: str, inImageFileName: str, suffix: str = '') -> str:
-        return join(self._getUnstackedMasksDir(tsId), basename(inImageFileName) + suffix)
+        return join(self._getUnstackedMasksDir(tsId, suffix=suffix), basename(inImageFileName))
 
     def _getOutputImgFileName(self, tsId: str, inImageFileName: str, suffix: str = '') -> str:
         return join(self._getUnstackedErasedImgsDir(tsId, suffix=suffix), basename(inImageFileName))
@@ -289,10 +289,14 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtStreamingBase):
             inImgsDirOdd = self._getUnstackedImgsDir(tsId, suffix=ODD_SUFFIX)
             outImgsDirEven = self._getUnstackedErasedImgsDir(tsId, suffix=EVEN_SUFFIX)
             outImgsDirOdd = self._getUnstackedErasedImgsDir(tsId, suffix=ODD_SUFFIX)
+            masksDirEven = self._getUnstackedMasksDir(tsId, suffix=EVEN_SUFFIX)
+            masksDirOdd = self._getUnstackedMasksDir(tsId, suffix=ODD_SUFFIX)
             evenOdddirList = [outImgsDirEven,
                               outImgsDirOdd,
                               inImgsDirEven,
-                              inImgsDirOdd]
+                              inImgsDirOdd,
+                              masksDirEven,
+                              masksDirOdd]
             dirList.extend(evenOdddirList)
         makePath(*dirList)
 
@@ -321,7 +325,7 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtStreamingBase):
         nImgs = len(imagesList)
         for i, inImage in enumerate(sorted(imagesList)):
             logger.info(cyanStr(f'======> tsId = {tsId}{suffix}: processing image {i + 1} of {nImgs}'))
-            outImgMask = self._getOutputMaskFileName(tsId, inImage)
+            outImgMask = self._getOutputMaskFileName(tsId, inImage, suffix=suffix)
             outResultImg = self._getOutputImgFileName(tsId, inImage, suffix=suffix)
             # Predict: only for the whole TS
             if not suffix:
