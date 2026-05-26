@@ -114,6 +114,18 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtStreamingBase):
 
     # --------------------------- INSERT steps functions ----------------------
     def stepsGeneratorStep(self) -> None:
+        # JORGE
+        import os
+        fname = "/home/jjimenez/test_JJ.txt"
+        if os.path.exists(fname):
+            os.remove(fname)
+        fjj = open(fname, "a+")
+        fjj.write('JORGE--------->onDebugMode PID {}'.format(os.getpid()))
+        fjj.close()
+        print('JORGE--------->onDebugMode PID {}'.format(os.getpid()))
+        import time
+        time.sleep(10)
+        # JORGE_END
         closeSetStepDeps = []
         inTsSet = self._getInTsSet()
         self.sRate = self._getInTsSet().getSamplingRate()
@@ -328,9 +340,8 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtStreamingBase):
             outImgMask = self._getOutputMaskFileName(tsId, inImage, suffix=suffix)
             outResultImg = self._getOutputImgFileName(tsId, inImage, suffix=suffix)
             # Predict: only for the whole TS
-            if not suffix:
-                args = self._getPredictArgs(inImage, outImgMask)
-                Plugin.runFidder(self, args)
+            args = self._getPredictArgs(inImage, outImgMask)
+            Plugin.runFidder(self, args)
             # Erase: do always this part, no matter if it's the whole TS, the even or the odd
             args = self._getEraseFidArgs(inImage, outImgMask, outResultImg)
             Plugin.runFidder(self, args)
