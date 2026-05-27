@@ -202,6 +202,7 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtStreamingBase):
         if tsIdTmpDir:
             shutil.rmtree(tsIdTmpDir)
 
+
     @retry_on_sqlite_lock(log=logger)
     def _registerOutput(self,
                         inTs: TiltSeries,
@@ -231,6 +232,7 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtStreamingBase):
                 output = getattr(self, outputName.name, None)
                 if output:
                     output.close()
+                    time.sleep(10)
 
     # --------------------------- UTILS functions -----------------------------
     def readingOutput(self) -> None:
@@ -259,7 +261,7 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtStreamingBase):
         return join(self._getCurrentTsTmpDir(tsId), 'unstackedResults' + suffix)
 
     def _getOutputMaskFileName(self, tsId: str, inImageFileName: str, suffix: str = '') -> str:
-        return join(self._getUnstackedMasksDir(tsId, suffix=suffix), basename(inImageFileName))
+        return join(self._getUnstackedMasksDir(tsId), basename(inImageFileName.replace(suffix, '')))
 
     def _getOutputImgFileName(self, tsId: str, inImageFileName: str, suffix: str = '') -> str:
         return join(self._getUnstackedErasedImgsDir(tsId, suffix=suffix), basename(inImageFileName))
@@ -289,14 +291,14 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtStreamingBase):
             inImgsDirOdd = self._getUnstackedImgsDir(tsId, suffix=ODD_SUFFIX)
             outImgsDirEven = self._getUnstackedErasedImgsDir(tsId, suffix=EVEN_SUFFIX)
             outImgsDirOdd = self._getUnstackedErasedImgsDir(tsId, suffix=ODD_SUFFIX)
-            masksDirEven = self._getUnstackedMasksDir(tsId, suffix=EVEN_SUFFIX)
-            masksDirOdd = self._getUnstackedMasksDir(tsId, suffix=ODD_SUFFIX)
+            # masksDirEven = self._getUnstackedMasksDir(tsId, suffix=EVEN_SUFFIX)
+            # masksDirOdd = self._getUnstackedMasksDir(tsId, suffix=ODD_SUFFIX)
             evenOdddirList = [outImgsDirEven,
                               outImgsDirOdd,
                               inImgsDirEven,
-                              inImgsDirOdd,
-                              masksDirEven,
-                              masksDirOdd]
+                              inImgsDirOdd]
+                              # masksDirEven,
+                              # masksDirOdd]
             dirList.extend(evenOdddirList)
         makePath(*dirList)
 
