@@ -1,4 +1,8 @@
-3.2.2: add weakImport to tests.
+3.2.2:
+ Users:
+  - Fix even / odd management (thanks, miceta!)
+ Developers:
+  - Add weakImport to tests.
 3.2.1: deploy test.
 3.2.0:
  Users:
