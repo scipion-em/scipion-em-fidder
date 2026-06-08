@@ -27,6 +27,7 @@
 import glob
 import logging
 import shutil
+import sqlite3
 import time
 import traceback
 from enum import Enum
@@ -218,8 +219,11 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtStreamingBase):
                 shutil.rmtree(tsIdTmpDir)
 
         except Exception as e:
-            logger.error(redStr(f'tsId = {tsId} -> Unable to register the output with exception {e}. Skipping... '))
-            logger.error(traceback.format_exc())
+            if isinstance(e, sqlite3.OperationalError):
+                raise e
+            else:
+                logger.error(redStr(f'tsId = {tsId} -> Unable to register the output with exception {e}. Skipping... '))
+                logger.error(traceback.format_exc())
 
     @retry_on_sqlite_lock(log=logger)
     def _registerOutput(self,
