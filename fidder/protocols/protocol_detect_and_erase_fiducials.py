@@ -203,8 +203,10 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtStreamingBase):
             newTs = TiltSeries()
             newTs.copyInfo(inTs)
             doEvenOdd = self.doEvenOdd.get()
+            inTiltList = inTs.loadTiltImgsInMemory()
+            inTiltList.sort(key=lambda item: item.getIndex())
             tiltImages = []
-            for inTi in inTs.iterItems(orderBy=TiltImage.INDEX_FIELD):
+            for inTi in inTs.loadTiltImgsInMemory():
                 newTi = TiltImage()
                 newTi.copyInfo(inTi)
                 newTi.setFileName(tsFName)
