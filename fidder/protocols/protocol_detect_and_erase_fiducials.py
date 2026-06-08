@@ -28,6 +28,7 @@ import glob
 import logging
 import shutil
 import time
+import traceback
 from enum import Enum
 from os.path import join, basename
 from typing import Union, List, Counter
@@ -41,7 +42,7 @@ from pwem.protocols import EMProtocol
 from pyworkflow.object import Set, Pointer
 from pyworkflow.protocol import PointerParam, FloatParam, GT, LE, GPU_LIST, StringParam, BooleanParam, LEVEL_ADVANCED, \
     STEPS_PARALLEL, ProtStreamingBase
-from pyworkflow.utils import Message, makePath, cyanStr, redStr
+from pyworkflow.utils import Message, makePath, cyanStr, redStr, yellowStr
 from pyworkflow.utils.retry_streaming import retry_on_sqlite_lock
 from tomo.objects import SetOfTiltSeries, TiltSeries, TiltImage
 
@@ -120,41 +121,46 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtStreamingBase):
         self.readingOutput()
 
         while True:
-            with self._lock:
+            try:
                 inTsIds = set(inTsSet.getTSIds())
 
-            # In the if statement below, Counter is used because in the tsId comparison the order doesn’t matter
-            # but duplicates do. With a direct comparison, the closing step may not be inserted because of the order:
-            # ['ts_a', 'ts_b'] != ['ts_b', 'ts_a'], but they are the same with Counter.
-            if not inTsSet.isStreamOpen() and Counter(self.itemTsIdReadList) == Counter(inTsIds):
-                logger.info(cyanStr('Input set closed.\n'))
-                self._insertFunctionStep(self._closeOutputSet,
-                                         prerequisites=closeSetStepDeps,
-                                         needsGPU=False)
-                break
+                # In the if statement below, Counter is used because in the tsId comparison the order doesn’t matter
+                # but duplicates do. With a direct comparison, the closing step may not be inserted because of the order:
+                # ['ts_a', 'ts_b'] != ['ts_b', 'ts_a'], but they are the same with Counter.
+                if not inTsSet.isStreamOpen() and Counter(self.itemTsIdReadList) == Counter(inTsIds):
+                    logger.info(cyanStr('Input set closed.\n'))
+                    self._insertFunctionStep(self._closeOutputSet,
+                                             prerequisites=closeSetStepDeps,
+                                             needsGPU=False)
+                    break
 
-            nonProcessedTsIds = inTsIds - set(self.itemTsIdReadList)
-            tsToProcessDict = {tsId: ts.clone() for ts in inTsSet.iterItems()
-                               if (tsId := ts.getTsId()) in nonProcessedTsIds  # Only not processed tsIds
-                               and ts.getSize() > 0}  # Avoid processing empty TS
-            for tsId, ts in tsToProcessDict.items():
-                cInputId = self._insertFunctionStep(self.convertInputStep, ts,
-                                                    prerequisites=[],
-                                                    needsGPU=False)
-                predFidId = self._insertFunctionStep(self.predictAndEraseFiducialMaskStep, tsId,
-                                                     prerequisites=cInputId,
-                                                     needsGPU=True)
-                cOutId = self._insertFunctionStep(self.createOutputStep, ts,
-                                                  prerequisites=predFidId,
-                                                  needsGPU=False)
-                closeSetStepDeps.append(cOutId)
-                logger.info(cyanStr(f"Steps created for tsId = {tsId}"))
-                self.itemTsIdReadList.append(tsId)
+                nonProcessedTsIds = inTsIds - set(self.itemTsIdReadList)
+                tsToProcessDict = {tsId: ts.clone() for ts in inTsSet.iterItems()
+                                   if (tsId := ts.getTsId()) in nonProcessedTsIds  # Only not processed tsIds
+                                   and ts.getSize() > 0}  # Avoid processing empty TS
+                for tsId, ts in tsToProcessDict.items():
+                    cInputId = self._insertFunctionStep(self.convertInputStep, ts,
+                                                        prerequisites=[],
+                                                        needsGPU=False)
+                    predFidId = self._insertFunctionStep(self.predictAndEraseFiducialMaskStep, tsId,
+                                                         prerequisites=cInputId,
+                                                         needsGPU=True)
+                    cOutId = self._insertFunctionStep(self.createOutputStep, ts,
+                                                      prerequisites=predFidId,
+                                                      needsGPU=False)
+                    closeSetStepDeps.append(cOutId)
+                    logger.info(cyanStr(f"Steps created for tsId = {tsId}"))
+                    self.itemTsIdReadList.append(tsId)
 
-            time.sleep(10)
-            if inTsSet.isStreamOpen():
-                with self._lock:
+                time.sleep(10)
+                if inTsSet.isStreamOpen():
                     inTsSet.loadAllProperties()  # refresh status for the streaming
+
+            except Exception as e:
+                logger.warning(yellowStr(f'stepsGeneratorStep failed with exception: {e}. '
+                                         f'Sleeping for 10 seconds...'))
+                time.sleep(10)
+                continue
 
     # -------------------------- STEPS functions ------------------------------
     def convertInputStep(self, ts: TiltSeries):
@@ -187,48 +193,52 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtStreamingBase):
             self.createOutputFailedSet(inTs)
             return
 
-        if self.saveMaskStack.get():
-            # Mount the segmented stack
-            self._mountSegmentedStack(tsId)
-        tsFName, tsFnameEven, tsFnameOdd = self._mountTiltSeries(tsId, doEvenOdd=self.doEvenOdd.get())
-        self._registerOutput(inTs, tsFName, tsFnameEven, tsFnameOdd)
-
-        # Clean the current ts folder/s in /tmp
-        tsIdTmpDir = self._getTmpPath(tsId)
-        if tsIdTmpDir:
-            shutil.rmtree(tsIdTmpDir)
-
-
-    @retry_on_sqlite_lock(log=logger)
-    def _registerOutput(self,
-                        inTs: TiltSeries,
-                        tsFName: str,
-                        tsFnameEven: str,
-                        tsFnameOdd: str):
-        with self._lock:
-            # Mount the resulting tilt-series
-            outTsSet = self._getOutputTsSet()
+        try:
+            if self.saveMaskStack.get():
+                # Mount the segmented stack
+                self._mountSegmentedStack(tsId)
+            tsFName, tsFnameEven, tsFnameOdd = self._mountTiltSeries(tsId, doEvenOdd=self.doEvenOdd.get())
+            # Build objects outside the lock
             newTs = TiltSeries()
             newTs.copyInfo(inTs)
-            outTsSet.append(newTs)
-
+            doEvenOdd = self.doEvenOdd.get()
+            tiltImages = []
             for inTi in inTs.iterItems(orderBy=TiltImage.INDEX_FIELD):
                 newTi = TiltImage()
                 newTi.copyInfo(inTi)
                 newTi.setFileName(tsFName)
-                if self.doEvenOdd.get():
+                if doEvenOdd:
                     newTi.setOddEven([tsFnameOdd, tsFnameEven])
-                newTs.append(newTi)
+                tiltImages.append(newTi)
+            self._registerOutput(newTs,tiltImages)
 
+            # Clean the current ts folder/s in /tmp
+            tsIdTmpDir = self._getTmpPath(tsId)
+            if tsIdTmpDir:
+                shutil.rmtree(tsIdTmpDir)
+
+        except Exception as e:
+            logger.error(redStr(f'tsId = {tsId} -> Unable to register the output with exception {e}. Skipping... '))
+            logger.error(traceback.format_exc())
+
+    @retry_on_sqlite_lock(log=logger)
+    def _registerOutput(self,
+                        newTs: TiltSeries,
+                        tiltImages: List[TiltImage]):
+        # Minimal lock scope: only DB writes
+        with self._lock:
+            outTsSet = self._getOutputTsSet()
+            outTsSet.append(newTs)
+            for newTi in tiltImages:
+                newTs.append(newTi)
             newTs.write()
             outTsSet.update(newTs)
             outTsSet.write()
-            self._store(outTsSet)
+
             for outputName in self._possibleOutputs:
                 output = getattr(self, outputName.name, None)
                 if output:
                     output.close()
-                    time.sleep(10)
 
     # --------------------------- UTILS functions -----------------------------
     def readingOutput(self) -> None:
