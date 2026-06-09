@@ -28,7 +28,6 @@ import glob
 import logging
 import shutil
 import sqlite3
-import time
 import traceback
 from enum import Enum
 from os.path import join, basename
@@ -46,6 +45,7 @@ from pyworkflow.protocol import PointerParam, FloatParam, GT, LE, GPU_LIST, Stri
 from pyworkflow.utils import Message, makePath, cyanStr, redStr, yellowStr
 from pyworkflow.utils.retry_streaming import retry_on_sqlite_lock
 from tomo.objects import SetOfTiltSeries, TiltSeries, TiltImage
+from tomo.utils import sleepRandomly
 
 logger = logging.getLogger(__name__)
 # Form variables
@@ -153,14 +153,13 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtStreamingBase):
                     logger.info(cyanStr(f"Steps created for tsId = {tsId}"))
                     self.itemTsIdReadList.append(tsId)
 
-                time.sleep(10)
+                sleepRandomly()
                 if inTsSet.isStreamOpen():
                     inTsSet.loadAllProperties()  # refresh status for the streaming
 
             except Exception as e:
-                logger.warning(yellowStr(f'stepsGeneratorStep failed with exception: {e}. '
-                                         f'Sleeping for 10 seconds...'))
-                time.sleep(10)
+                logger.error(yellowStr(f'stepsGeneratorStep failed with exception: {e}.'))
+                sleepRandomly()
                 continue
 
     # -------------------------- STEPS functions ------------------------------
