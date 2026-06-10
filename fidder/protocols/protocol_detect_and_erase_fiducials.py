@@ -45,7 +45,7 @@ from pyworkflow.protocol import PointerParam, FloatParam, GT, LE, GPU_LIST, Stri
 from pyworkflow.utils import Message, makePath, cyanStr, redStr, yellowStr
 from pyworkflow.utils.retry_streaming import retry_on_sqlite_lock
 from tomo.objects import SetOfTiltSeries, TiltSeries, TiltImage
-from tomo.utils import sleepRandomly
+from tomo.utils import sleepRandomly, refreshStreaming
 
 logger = logging.getLogger(__name__)
 # Form variables
@@ -136,26 +136,23 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtStreamingBase):
                     break
 
                 nonProcessedTsIds = inTsIds - set(self.itemTsIdReadList)
-                tsToProcessDict = {tsId: ts.clone() for ts in inTsSet.iterItems()
-                                   if (tsId := ts.getTsId()) in nonProcessedTsIds  # Only not processed tsIds
-                                   and ts.getSize() > 0}  # Avoid processing empty TS
-                for tsId, ts in tsToProcessDict.items():
-                    cInputId = self._insertFunctionStep(self.convertInputStep, ts,
-                                                        prerequisites=[],
-                                                        needsGPU=False)
-                    predFidId = self._insertFunctionStep(self.predictAndEraseFiducialMaskStep, tsId,
-                                                         prerequisites=cInputId,
-                                                         needsGPU=True)
-                    cOutId = self._insertFunctionStep(self.createOutputStep, ts,
-                                                      prerequisites=predFidId,
-                                                      needsGPU=False)
-                    closeSetStepDeps.append(cOutId)
-                    logger.info(cyanStr(f"Steps created for tsId = {tsId}"))
-                    self.itemTsIdReadList.append(tsId)
+                if nonProcessedTsIds:
+                    tsToProcessDict = inTsSet.fetchNewTs(tsIds=nonProcessedTsIds)
+                    for tsId, ts in tsToProcessDict.items():
+                        cInputId = self._insertFunctionStep(self.convertInputStep, ts,
+                                                            prerequisites=[],
+                                                            needsGPU=False)
+                        predFidId = self._insertFunctionStep(self.predictAndEraseFiducialMaskStep, tsId,
+                                                             prerequisites=cInputId,
+                                                             needsGPU=True)
+                        cOutId = self._insertFunctionStep(self.createOutputStep, ts,
+                                                          prerequisites=predFidId,
+                                                          needsGPU=False)
+                        closeSetStepDeps.append(cOutId)
+                        logger.info(cyanStr(f"Steps created for tsId = {tsId}"))
+                        self.itemTsIdReadList.append(tsId)
 
-                sleepRandomly()
-                if inTsSet.isStreamOpen():
-                    inTsSet.loadAllProperties()  # refresh status for the streaming
+                refreshStreaming(inTsSet)
 
             except Exception as e:
                 logger.error(yellowStr(f'stepsGeneratorStep failed with exception: {e}.'))
