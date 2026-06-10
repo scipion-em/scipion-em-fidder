@@ -137,7 +137,7 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtStreamingBase):
 
                 nonProcessedTsIds = inTsIds - set(self.itemTsIdReadList)
                 if nonProcessedTsIds:
-                    tsToProcessDict = inTsSet.fetchNewTs(tsIds=nonProcessedTsIds)
+                    tsToProcessDict = inTsSet.fetchNewTs(nonProcessedTsIds)
                     for tsId, ts in tsToProcessDict.items():
                         cInputId = self._insertFunctionStep(self.convertInputStep, ts,
                                                             prerequisites=[],
