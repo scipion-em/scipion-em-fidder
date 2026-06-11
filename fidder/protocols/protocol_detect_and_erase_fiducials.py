@@ -236,11 +236,7 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtStreamingBase):
             newTs.write()
             outTsSet.update(newTs)
             outTsSet.write()
-
-            for outputName in self._possibleOutputs:
-                output = getattr(self, outputName.name, None)
-                if output:
-                    output.close()
+            self._store(outTsSet)
 
     # --------------------------- UTILS functions -----------------------------
     def readingOutput(self) -> None:
