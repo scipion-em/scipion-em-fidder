@@ -45,7 +45,7 @@ from pyworkflow.protocol import PointerParam, FloatParam, GT, LE, GPU_LIST, Stri
 from pyworkflow.utils import Message, makePath, cyanStr, redStr, yellowStr
 from pyworkflow.utils.retry_streaming import retry_on_sqlite_lock
 from tomo.objects import SetOfTiltSeries, TiltSeries, TiltImage
-from tomo.utils import sleepRandomly, refreshStreaming
+from tomo.utils import sleepRandomly, refreshStreaming, isStreamClosed, genDoneFile
 
 logger = logging.getLogger(__name__)
 # Form variables
@@ -128,9 +128,9 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtStreamingBase):
                 # In the if statement below, Counter is used because in the tsId comparison the order doesn’t matter
                 # but duplicates do. With a direct comparison, the closing step may not be inserted because of the order:
                 # ['ts_a', 'ts_b'] != ['ts_b', 'ts_a'], but they are the same with Counter.
-                if not inTsSet.isStreamOpen() and Counter(self.itemTsIdReadList) == Counter(inTsIds):
+                if isStreamClosed(self) and Counter(self.itemTsIdReadList) == Counter(inTsIds):
                     logger.info(cyanStr('Input set closed.\n'))
-                    self._insertFunctionStep(self._closeOutputSet,
+                    self._insertFunctionStep(self.closeOutputSetsStep,
                                              prerequisites=closeSetStepDeps,
                                              needsGPU=False)
                     break
@@ -152,7 +152,7 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtStreamingBase):
                         logger.info(cyanStr(f"Steps created for tsId = {tsId}"))
                         self.itemTsIdReadList.append(tsId)
 
-                refreshStreaming(inTsSet)
+                sleepRandomly()
 
             except Exception as e:
                 logger.error(yellowStr(f'stepsGeneratorStep failed with exception: {e}.'))
@@ -237,6 +237,15 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtStreamingBase):
             outTsSet.update(newTs)
             outTsSet.write()
             self._store(outTsSet)
+
+    def closeOutputSetsStep(self):
+        self._closeOutputSet()
+        failedOutputList = []
+        output = getattr(self, self._possibleOutputs.tiltSeries.name, None)
+        if not output or (output and len(output) == 0):
+            raise Exception(f'No output/s {failedOutputList} were generated. Please check the '
+                            f'Output Log > run.stdout and run.stderr')
+        genDoneFile(self)
 
     # --------------------------- UTILS functions -----------------------------
     def readingOutput(self) -> None:
