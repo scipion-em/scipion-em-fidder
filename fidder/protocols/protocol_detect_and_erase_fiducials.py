@@ -45,7 +45,9 @@ from pyworkflow.protocol import PointerParam, FloatParam, GT, LE, GPU_LIST, Stri
 from pyworkflow.utils import Message, makePath, cyanStr, redStr, yellowStr
 from pyworkflow.utils.retry_streaming import retry_on_sqlite_lock
 from tomo.objects import SetOfTiltSeries, TiltSeries, TiltImage
-from tomo.utils import sleepRandomly, refreshStreaming, isStreamClosed, genDoneFile
+from tomo.utils import sleepRandomly
+from pwem import (genExecStatusDir, appendStreamItem, closeStreamJournal,
+                  touchHeartbeat, STREAM_HEARTBEAT_TIMEOUT)
 
 logger = logging.getLogger(__name__)
 # Form variables
@@ -119,21 +121,41 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtStreamingBase):
         closeSetStepDeps = []
         inTsSet = self._getInTsSet()
         self.sRate = self._getInTsSet().getSamplingRate()
+        genExecStatusDir(self)
         self.readingOutput()
 
         while True:
             try:
+                # Refresh this protocol's heartbeat so its own consumers can tell
+                # it is alive even during long gaps with no new tilt-series.
+                touchHeartbeat(self)
+                # Discover ready tsIds from the producer's append-only journal
+                # (filesystem), not from its live SQLite set.
                 inTsIds = set(inTsSet.getTSIds())
 
                 # In the if statement below, Counter is used because in the tsId comparison the order doesn’t matter
                 # but duplicates do. With a direct comparison, the closing step may not be inserted because of the order:
                 # ['ts_a', 'ts_b'] != ['ts_b', 'ts_a'], but they are the same with Counter.
-                if isStreamClosed(self) and Counter(self.itemTsIdReadList) == Counter(inTsIds):
+                if inTsSet.isStreamClosed() and Counter(self.itemTsIdReadList) == Counter(inTsIds):
                     logger.info(cyanStr('Input set closed.\n'))
                     self._insertFunctionStep(self.closeOutputSetsStep,
                                              prerequisites=closeSetStepDeps,
                                              needsGPU=False)
                     break
+
+                # Producer-liveness: if the stream was never closed but the
+                # producer's heartbeat is stale, it likely died. Close gracefully
+                # with whatever was processed instead of looping forever.
+                if not inTsSet.isStreamClosed():
+                    hbAge = inTsSet.getProducerHeartbeatAge()
+                    if hbAge is not None and hbAge > STREAM_HEARTBEAT_TIMEOUT:
+                        logger.error(redStr(
+                            f'Producer heartbeat stale ({hbAge:.0f}s) and stream not '
+                            f'closed; closing with partial outputs.'))
+                        self._insertFunctionStep(self.closeOutputSetsStep,
+                                                 prerequisites=closeSetStepDeps,
+                                                 needsGPU=False)
+                        break
 
                 nonProcessedTsIds = inTsIds - set(self.itemTsIdReadList)
                 if nonProcessedTsIds:
@@ -216,6 +238,9 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtStreamingBase):
             if tsIdTmpDir:
                 shutil.rmtree(tsIdTmpDir)
 
+            # Publish this tsId to our own stream journal for downstream consumers.
+            appendStreamItem(self, tsId)
+
         except Exception as e:
             if isinstance(e, sqlite3.OperationalError):
                 raise e
@@ -245,7 +270,7 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtStreamingBase):
         if not output or (output and len(output) == 0):
             raise Exception(f'No output/s {failedOutputList} were generated. Please check the '
                             f'Output Log > run.stdout and run.stderr')
-        genDoneFile(self)
+        closeStreamJournal(self)
 
     # --------------------------- UTILS functions -----------------------------
     def readingOutput(self) -> None:
