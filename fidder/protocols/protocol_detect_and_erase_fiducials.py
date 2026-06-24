@@ -30,7 +30,7 @@ import shutil
 import sqlite3
 import traceback
 from enum import Enum
-from os.path import join, basename
+from os.path import join, basename, exists
 from typing import Union, List, Counter
 import mrcfile
 import numpy as np
@@ -41,13 +41,14 @@ from pwem.emlib.image.image_readers import ImageReadersRegistry
 from pwem.protocols import EMProtocol
 from pyworkflow.object import Set, Pointer
 from pyworkflow.protocol import PointerParam, FloatParam, GT, LE, GPU_LIST, StringParam, BooleanParam, LEVEL_ADVANCED, \
-    STEPS_PARALLEL, ProtStreamingBase
+    STEPS_PARALLEL
 from pyworkflow.utils import Message, makePath, cyanStr, redStr, yellowStr
 from pyworkflow.utils.retry_streaming import retry_on_sqlite_lock
 from tomo.objects import SetOfTiltSeries, TiltSeries, TiltImage
-from tomo.utils import sleepRandomly
+from tomo.protocols.protocol_base_streaming_tomo import ProtocolBaseStreamingTomo
+from tomo.utils import sleepRandomly, writeTsSidecar
 from pwem import (genExecStatusDir, appendStreamItem, closeStreamJournal,
-                  touchHeartbeat, STREAM_HEARTBEAT_TIMEOUT)
+                  touchHeartbeat, STREAM_HEARTBEAT_TIMEOUT, getExecStatusDir)
 
 logger = logging.getLogger(__name__)
 # Form variables
@@ -69,7 +70,7 @@ class fidderOutputs(Enum):
     tiltSeries = SetOfTiltSeries
 
 
-class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtStreamingBase):
+class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtocolBaseStreamingTomo):
     """Fidder is a Python package for detecting and erasing gold fiducials in cryo-EM images.
     The fiducials are detected using a pre-trained residual 2D U-Net at 8 Å/px. Segmented regions are replaced
     with white noise matching the local mean and global standard deviation of the image."""
@@ -114,63 +115,40 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtStreamingBase):
         form.addHidden(GPU_LIST, StringParam,
                        default='0',
                        label="Choose GPU IDs")
-        form.addParallelSection(threads=2, mpi=0)
+        form.addParallelSection(threads=3, mpi=0)
 
     # --------------------------- INSERT steps functions ----------------------
+    def _insertAllSteps(self) -> None:
+        inTsSet = self._getInTsSet()
+        self.sRate = self._getInTsSet().getSamplingRate()
+        if inTsSet.isStreamOpen():
+            self._insertFunctionStep(self.stepsGeneratorStep,
+                                     prerequisites=[],
+                                     needsGPU=False)
+        else:
+            self._insertNonStreamingSteps()
+
     def stepsGeneratorStep(self) -> None:
         closeSetStepDeps = []
         inTsSet = self._getInTsSet()
-        self.sRate = self._getInTsSet().getSamplingRate()
         genExecStatusDir(self)
         self.readingOutput()
 
         while True:
             try:
-                # Refresh this protocol's heartbeat so its own consumers can tell
-                # it is alive even during long gaps with no new tilt-series.
-                touchHeartbeat(self)
-                # Discover ready tsIds from the producer's append-only journal
-                # (filesystem), not from its live SQLite set.
                 inTsIds = set(inTsSet.getTSIds())
-
-                # In the if statement below, Counter is used because in the tsId comparison the order doesn’t matter
-                # but duplicates do. With a direct comparison, the closing step may not be inserted because of the order:
-                # ['ts_a', 'ts_b'] != ['ts_b', 'ts_a'], but they are the same with Counter.
-                if inTsSet.isStreamClosed() and Counter(self.itemTsIdReadList) == Counter(inTsIds):
-                    logger.info(cyanStr('Input set closed.\n'))
-                    self._insertFunctionStep(self.closeOutputSetsStep,
-                                             prerequisites=closeSetStepDeps,
-                                             needsGPU=False)
+                if self._stopGeneratingSteps(inTsSet,
+                                             inTsIds=inTsIds,
+                                             tsIdReadList=self.itemTsIdReadList,
+                                             outputNames=self._possibleOutputs.tiltSeries.name,
+                                             closeSetStepDeps=closeSetStepDeps):
                     break
-
-                # Producer-liveness: if the stream was never closed but the
-                # producer's heartbeat is stale, it likely died. Close gracefully
-                # with whatever was processed instead of looping forever.
-                if not inTsSet.isStreamClosed():
-                    hbAge = inTsSet.getProducerHeartbeatAge()
-                    if hbAge is not None and hbAge > STREAM_HEARTBEAT_TIMEOUT:
-                        logger.error(redStr(
-                            f'Producer heartbeat stale ({hbAge:.0f}s) and stream not '
-                            f'closed; closing with partial outputs.'))
-                        self._insertFunctionStep(self.closeOutputSetsStep,
-                                                 prerequisites=closeSetStepDeps,
-                                                 needsGPU=False)
-                        break
 
                 nonProcessedTsIds = inTsIds - set(self.itemTsIdReadList)
                 if nonProcessedTsIds:
                     tsToProcessDict = inTsSet.fetchNewTs(nonProcessedTsIds)
                     for tsId, ts in tsToProcessDict.items():
-                        cInputId = self._insertFunctionStep(self.convertInputStep, ts,
-                                                            prerequisites=[],
-                                                            needsGPU=False)
-                        predFidId = self._insertFunctionStep(self.predictAndEraseFiducialMaskStep, tsId,
-                                                             prerequisites=cInputId,
-                                                             needsGPU=True)
-                        cOutId = self._insertFunctionStep(self.createOutputStep, ts,
-                                                          prerequisites=predFidId,
-                                                          needsGPU=False)
-                        closeSetStepDeps.append(cOutId)
+                        self._insertCommonSteps(ts, closeSetStepDeps)
                         logger.info(cyanStr(f"Steps created for tsId = {tsId}"))
                         self.itemTsIdReadList.append(tsId)
 
@@ -178,8 +156,33 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtStreamingBase):
 
             except Exception as e:
                 logger.error(yellowStr(f'stepsGeneratorStep failed with exception: {e}.'))
+                logger.error(traceback.format_exc())
                 sleepRandomly()
                 continue
+
+    def _insertNonStreamingSteps(self):
+        closeSetStepDeps = []
+        inTsSet = self._getInTsSet()
+        tsList = [ts.clone() for ts in inTsSet.iterItems()]
+        for ts in tsList:
+            self._insertCommonSteps(ts, closeSetStepDeps)
+        self._insertFunctionStep(self._closeOutputSet,
+                                 self._possibleOutputs.tiltSeries.name,
+                                 prerequisites=closeSetStepDeps,
+                                 needsGPU=False)
+
+    def _insertCommonSteps(self, ts: TiltSeries, closeSetStepDeps: List[int]) -> None:
+        cInputId = self._insertFunctionStep(self.convertInputStep, ts,
+                                            prerequisites=[],
+                                            needsGPU=False)
+        predFidId = self._insertFunctionStep(self.predictAndEraseFiducialMaskStep,
+                                             ts.getTsId(),
+                                             prerequisites=cInputId,
+                                             needsGPU=True)
+        cOutId = self._insertFunctionStep(self.createOutputStep, ts,
+                                          prerequisites=predFidId,
+                                          needsGPU=False)
+        closeSetStepDeps.append(cOutId)
 
     # -------------------------- STEPS functions ------------------------------
     def convertInputStep(self, ts: TiltSeries):
@@ -224,29 +227,34 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtStreamingBase):
             inTiltList = inTs.loadTiltImgsInMemory()
             inTiltList.sort(key=lambda item: item.getIndex())
             tiltImages = []
-            for inTi in inTs.loadTiltImgsInMemory():
+            for inTi in inTiltList:
                 newTi = TiltImage()
                 newTi.copyInfo(inTi)
                 newTi.setFileName(tsFName)
                 if doEvenOdd:
                     newTi.setOddEven([tsFnameOdd, tsFnameEven])
                 tiltImages.append(newTi)
-            self._registerOutput(newTs,tiltImages)
+            self._registerOutput(newTs, tiltImages)
+
+            # Publish a metadata sidecar (built from the in-memory ts/tiltImages, no DB
+            # read) so downstream consumers rebuild this tilt-series in memory WITHOUT
+            # opening the producer's live tiltseries.sqlite.
+            writeTsSidecar(getExecStatusDir(self), newTs, tiltImages)
+
+            # Publish this tsId to our own stream journal for downstream consumers,
+            # but ONLY in streaming mode (the status dir is created by
+            # stepsGeneratorStep). In batch mode there is no journal, so skip it.
+            if exists(getExecStatusDir(self)):
+                appendStreamItem(self, tsId)
 
             # Clean the current ts folder/s in /tmp
             tsIdTmpDir = self._getTmpPath(tsId)
             if tsIdTmpDir:
                 shutil.rmtree(tsIdTmpDir)
 
-            # Publish this tsId to our own stream journal for downstream consumers.
-            appendStreamItem(self, tsId)
-
         except Exception as e:
-            if isinstance(e, sqlite3.OperationalError):
-                raise e
-            else:
-                logger.error(redStr(f'tsId = {tsId} -> Unable to register the output with exception {e}. Skipping... '))
-                logger.error(traceback.format_exc())
+            logger.error(redStr(f'tsId = {tsId} -> Unable to register the output with exception {e}. Skipping... '))
+            logger.error(traceback.format_exc())
 
     @retry_on_sqlite_lock(log=logger)
     def _registerOutput(self,
@@ -262,15 +270,6 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtStreamingBase):
             outTsSet.update(newTs)
             outTsSet.write()
             self._store(outTsSet)
-
-    def closeOutputSetsStep(self):
-        self._closeOutputSet()
-        failedOutputList = []
-        output = getattr(self, self._possibleOutputs.tiltSeries.name, None)
-        if not output or (output and len(output) == 0):
-            raise Exception(f'No output/s {failedOutputList} were generated. Please check the '
-                            f'Output Log > run.stdout and run.stderr')
-        closeStreamJournal(self)
 
     # --------------------------- UTILS functions -----------------------------
     def readingOutput(self) -> None:
@@ -416,7 +415,7 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtStreamingBase):
                                 self._getUnstackedMasksDir(tsId),
                                 suffix=MASK_SUFFIX)
 
-    def _mountTiltSeries(self, tsId: str, doEvenOdd: bool=False) -> Tuple[str, str, str]:
+    def _mountTiltSeries(self, tsId: str, doEvenOdd: bool = False) -> Tuple[str, str, str]:
         resultingTsFileNameEven = ''
         resultingTsFileNameOdd = ''
         unstackedErasedImgsDir = self._getUnstackedErasedImgsDir(tsId)
