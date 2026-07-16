@@ -25,6 +25,7 @@
 # *
 # **************************************************************************
 import glob
+import json
 import logging
 import shutil
 import time
@@ -171,11 +172,12 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtStreamingBase):
     def predictAndEraseFiducialMaskStep(self, tsId: str):
         logger.info(cyanStr(f'===> tsId = {tsId}: Predicting the fiducial mask and erasing them...'))
         try:
-            self._runFidder(tsId)
-            # Odd/Even
-            if self.doEvenOdd.get():
-                self._runFidder(tsId, suffix=EVEN_SUFFIX)
-                self._runFidder(tsId, suffix=ODD_SUFFIX)
+            # All images of this tilt-series (main + even + odd) are processed
+            # by a single worker process so the U-Net checkpoint and the CUDA
+            # context are loaded ONCE per tilt-series instead of once per image
+            # (the per-image `fidder` CLI launches were the dominant cost).
+            manifestPath = self._buildManifest(tsId)
+            Plugin.runFidderBatch(self, manifestPath)
         except Exception as e:
             self.failedItems.append(tsId)
             logger.error(redStr(f'Fidder execution failed for tsId {tsId} -> {e}'))
@@ -293,6 +295,40 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtStreamingBase):
                               inImgsDirOdd]
             dirList.extend(evenOdddirList)
         makePath(*dirList)
+
+    def _buildManifest(self, tsId: str) -> str:
+        """Collect every unstacked image of this tilt-series (main + even +
+        odd) into a single JSON manifest consumed by the batch worker, which
+        loads the model once and processes them all in one process. Returns the
+        manifest path.
+
+        The mask is only persisted to disk when the (advanced) "save segmented
+        stack" option is on -- it is the sole consumer of the mask MRCs. When
+        off, the worker keeps the mask in memory and uses it only to erase,
+        avoiding a per-image disk round-trip. Mask paths intentionally collapse
+        the even/odd suffix into the same masks dir, matching the previous
+        per-image behaviour that `_mountSegmentedStack` relies on.
+        """
+        saveMask = self.saveMaskStack.get()
+        suffixes = [''] + ([EVEN_SUFFIX, ODD_SUFFIX] if self.doEvenOdd.get() else [])
+        items = []
+        for suffix in suffixes:
+            imagesList = sorted(glob.glob(join(self._getUnstackedImgsDir(tsId, suffix=suffix), '*' + MRC)))
+            for inImage in imagesList:
+                items.append({
+                    'input': inImage,
+                    'erased_out': self._getOutputImgFileName(tsId, inImage, suffix=suffix),
+                    'mask_out': self._getOutputMaskFileName(tsId, inImage, suffix=suffix) if saveMask else None,
+                })
+        manifest = {
+            'pixel_spacing': float(self.sRate),
+            'probability_threshold': float(getattr(self, PROB_THRESHOLD).get()),
+            'items': items,
+        }
+        manifestPath = join(self._getCurrentTsTmpDir(tsId), 'fidder_manifest.json')
+        with open(manifestPath, 'w') as f:
+            json.dump(manifest, f)
+        return manifestPath
 
     def _getPredictArgs(self, inImage: str, outMask: str) -> str:
         cmd = [
