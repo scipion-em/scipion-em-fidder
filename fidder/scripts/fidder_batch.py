@@ -81,6 +81,8 @@ from fidder.constants import TRAINING_PIXEL_SIZE, PIXELS_PER_FIDUCIAL
 from fidder.predict.probabilities_to_mask import probabilities_to_mask
 from fidder.erase import erase_masked_region
 
+ASTHW = '* h w'
+
 
 def _predict_mask(model, image, pixel_spacing, probability_threshold):
     """Reproduce fidder.predict.predict.predict_fiducial_mask with the model
@@ -88,9 +90,10 @@ def _predict_mask(model, image, pixel_spacing, probability_threshold):
     ``model.predict_step`` instead of ``Trainer(...).predict`` (same result,
     no per-image Trainer/CUDA setup). ``image`` is a single ``(h, w)`` tensor.
     """
+    HW11HW = "h w -> 1 1 h w"
     # prepare image (verbatim from predict_fiducial_mask)
     if image.ndim == 2:
-        image = rearrange(image, "h w -> 1 1 h w")
+        image = rearrange(image, HW11HW)
     elif image.ndim == 3:
         image = rearrange(image, "b h w -> b 1 h w")
     image = torch.as_tensor(image, dtype=torch.float)
@@ -112,11 +115,11 @@ def _predict_mask(model, image, pixel_spacing, probability_threshold):
     )
 
     # rescale for output (verbatim from predict_fiducial_mask)
-    probabilities = rearrange(probabilities, "h w -> 1 1 h w")
+    probabilities = rearrange(probabilities, HW11HW)
     probabilities = rescale_2d_bicubic(probabilities, size=(h, w))
     probabilities = torch.clamp(probabilities, min=0, max=1)
     rearrange(probabilities, "1 1 h w -> h w")
-    mask = rearrange(mask, "h w -> 1 1 h w")
+    mask = rearrange(mask, HW11HW)
     mask = rescale_2d_nearest(mask, size=(h, w))
     mask = rearrange(mask, "1 1 h w -> h w")
     return mask, probabilities
@@ -130,8 +133,8 @@ def _erase(image, mask, pixel_spacing, output_image):
     mask = torch.as_tensor(mask, dtype=torch.bool).squeeze()
     if image.shape != mask.shape:
         raise ValueError('Shape mismatch between image and mask.')
-    image, ps = einops.pack([image], pattern='* h w')
-    mask, ps = einops.pack([mask], pattern='* h w')
+    image, ps = einops.pack([image], pattern=ASTHW)
+    mask, ps = einops.pack([mask], pattern=ASTHW)
 
     erased_images = torch.empty_like(image, dtype=torch.float32)
     for idx, (img, msk) in enumerate(zip(image, mask)):
@@ -141,7 +144,7 @@ def _erase(image, mask, pixel_spacing, output_image):
             background_intensity_model_resolution=(8, 8),
             background_intensity_model_samples=25000,
         )
-    [erased_images] = einops.unpack(erased_images, pattern='* h w', packed_shapes=ps)
+    [erased_images] = einops.unpack(erased_images, pattern=ASTHW, packed_shapes=ps)
     mrcfile.write(
         name=output_image,
         data=np.array(erased_images, dtype=np.float32),
@@ -174,7 +177,7 @@ def main(manifest_path):
             mask_out = item.get('mask_out')
 
             images = torch.tensor(mrcfile.read(in_img)).float()
-            images, pack_shapes = einops.pack([images], pattern='* h w')
+            images, pack_shapes = einops.pack([images], pattern=ASTHW)
 
             # one (h, w) image per file (packed -> (1, h, w))
             mask, _ = _predict_mask(model, images[0], pixel_spacing,
@@ -183,7 +186,7 @@ def main(manifest_path):
             if mask_out:
                 # int8 mask MRC, byte-equivalent to `fidder predict` output
                 m = mask.to(torch.int8).cpu().numpy()
-                [m] = einops.unpack(m[None, ...], pattern='* h w',
+                [m] = einops.unpack(m[None, ...], pattern=ASTHW,
                                     packed_shapes=pack_shapes)
                 mrcfile.write(name=mask_out, data=m.astype(np.int8),
                               voxel_size=out_ps, overwrite=True)
