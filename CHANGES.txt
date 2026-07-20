@@ -1,6 +1,7 @@
 3.2.2:
  Users:
   - Fix even / odd management (thanks, miceta!)
+  - Execution optimized via batch execution loading the model only once per tilt-series instead of per image.
  Developers:
   - Add weakImport to tests.
 3.2.1: deploy test.
