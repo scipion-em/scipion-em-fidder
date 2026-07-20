@@ -25,6 +25,7 @@
 # *
 # **************************************************************************
 import glob
+import json
 import logging
 import shutil
 import time
@@ -35,8 +36,8 @@ import mrcfile
 import numpy as np
 from typing_extensions import Tuple
 from fidder import Plugin
-from pwem.emlib import DT_FLOAT
 from pwem.emlib.image import ImageHandler
+from pwem.emlib.image.image_readers import ImageReadersRegistry
 from pwem.protocols import EMProtocol
 from pyworkflow.object import Set, Pointer
 from pyworkflow.protocol import PointerParam, FloatParam, GT, LE, GPU_LIST, StringParam, BooleanParam, LEVEL_ADVANCED, \
@@ -160,26 +161,23 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtStreamingBase):
     def convertInputStep(self, ts: TiltSeries):
         tsId = ts.getTsId()
         logger.info(cyanStr(f'===> tsId = {tsId}: Unstacking...'))
-        tsFileName = ts.getFirstItem().getFileName()
         # Create the necessary directories in tmp
         self._createTmpDirs(tsId, doEvenOdd=self.doEvenOdd.get())
         # Fidder works with individual MRC images --> the tilt-series must be un-stacked
-        for i, ti in enumerate(ts.iterItems(orderBy=TiltImage.INDEX_FIELD)):
-            index = i + 1
-            self._generateUnstakedImg(tsId, tsFileName, index)
-            # Odd/Even
-            if self.doEvenOdd.get():
-                self._generateUnstakedImg(tsId, tsFileName, index, suffix=EVEN_SUFFIX)
-                self._generateUnstakedImg(tsId, tsFileName, index, suffix=ODD_SUFFIX)
+        self._unstackTiltSeries(ts)
+        if self.doEvenOdd.get():
+            self._unstackTiltSeries(ts, suffix=EVEN_SUFFIX)
+            self._unstackTiltSeries(ts, suffix=ODD_SUFFIX)
 
     def predictAndEraseFiducialMaskStep(self, tsId: str):
         logger.info(cyanStr(f'===> tsId = {tsId}: Predicting the fiducial mask and erasing them...'))
         try:
-            self._runFidder(tsId)
-            # Odd/Even
-            if self.doEvenOdd.get():
-                self._runFidder(tsId, suffix=EVEN_SUFFIX)
-                self._runFidder(tsId, suffix=ODD_SUFFIX)
+            # All images of this tilt-series (main + even + odd) are processed
+            # by a single worker process so the U-Net checkpoint and the CUDA
+            # context are loaded ONCE per tilt-series instead of once per image
+            # (the per-image `fidder` CLI launches were the dominant cost).
+            manifestPath = self._buildManifest(tsId)
+            Plugin.runFidderBatch(self, manifestPath)
         except Exception as e:
             self.failedItems.append(tsId)
             logger.error(redStr(f'Fidder execution failed for tsId {tsId} -> {e}'))
@@ -201,6 +199,7 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtStreamingBase):
         tsIdTmpDir = self._getTmpPath(tsId)
         if tsIdTmpDir:
             shutil.rmtree(tsIdTmpDir)
+
 
     @retry_on_sqlite_lock(log=logger)
     def _registerOutput(self,
@@ -231,6 +230,7 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtStreamingBase):
                 output = getattr(self, outputName.name, None)
                 if output:
                     output.close()
+                    time.sleep(10)
 
     # --------------------------- UTILS functions -----------------------------
     def readingOutput(self) -> None:
@@ -259,7 +259,7 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtStreamingBase):
         return join(self._getCurrentTsTmpDir(tsId), 'unstackedResults' + suffix)
 
     def _getOutputMaskFileName(self, tsId: str, inImageFileName: str, suffix: str = '') -> str:
-        return join(self._getUnstackedMasksDir(tsId), basename(inImageFileName) + suffix)
+        return join(self._getUnstackedMasksDir(tsId), basename(inImageFileName.replace(suffix, '')))
 
     def _getOutputImgFileName(self, tsId: str, inImageFileName: str, suffix: str = '') -> str:
         return join(self._getUnstackedErasedImgsDir(tsId, suffix=suffix), basename(inImageFileName))
@@ -296,6 +296,40 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtStreamingBase):
             dirList.extend(evenOdddirList)
         makePath(*dirList)
 
+    def _buildManifest(self, tsId: str) -> str:
+        """Collect every unstacked image of this tilt-series (main + even +
+        odd) into a single JSON manifest consumed by the batch worker, which
+        loads the model once and processes them all in one process. Returns the
+        manifest path.
+
+        The mask is only persisted to disk when the (advanced) "save segmented
+        stack" option is on -- it is the sole consumer of the mask MRCs. When
+        off, the worker keeps the mask in memory and uses it only to erase,
+        avoiding a per-image disk round-trip. Mask paths intentionally collapse
+        the even/odd suffix into the same masks dir, matching the previous
+        per-image behaviour that `_mountSegmentedStack` relies on.
+        """
+        saveMask = self.saveMaskStack.get()
+        suffixes = [''] + ([EVEN_SUFFIX, ODD_SUFFIX] if self.doEvenOdd.get() else [])
+        items = []
+        for suffix in suffixes:
+            imagesList = sorted(glob.glob(join(self._getUnstackedImgsDir(tsId, suffix=suffix), '*' + MRC)))
+            for inImage in imagesList:
+                items.append({
+                    'input': inImage,
+                    'erased_out': self._getOutputImgFileName(tsId, inImage, suffix=suffix),
+                    'mask_out': self._getOutputMaskFileName(tsId, inImage, suffix=suffix) if saveMask else None,
+                })
+        manifest = {
+            'pixel_spacing': float(self.sRate),
+            'probability_threshold': float(getattr(self, PROB_THRESHOLD).get()),
+            'items': items,
+        }
+        manifestPath = join(self._getCurrentTsTmpDir(tsId), 'fidder_manifest.json')
+        with open(manifestPath, 'w') as f:
+            json.dump(manifest, f)
+        return manifestPath
+
     def _getPredictArgs(self, inImage: str, outMask: str) -> str:
         cmd = [
             'predict',
@@ -321,20 +355,14 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtStreamingBase):
         nImgs = len(imagesList)
         for i, inImage in enumerate(sorted(imagesList)):
             logger.info(cyanStr(f'======> tsId = {tsId}{suffix}: processing image {i + 1} of {nImgs}'))
-            outImgMask = self._getOutputMaskFileName(tsId, inImage)
+            outImgMask = self._getOutputMaskFileName(tsId, inImage, suffix=suffix)
             outResultImg = self._getOutputImgFileName(tsId, inImage, suffix=suffix)
             # Predict: only for the whole TS
-            if not suffix:
-                args = self._getPredictArgs(inImage, outImgMask)
-                Plugin.runFidder(self, args)
+            args = self._getPredictArgs(inImage, outImgMask)
+            Plugin.runFidder(self, args)
             # Erase: do always this part, no matter if it's the whole TS, the even or the odd
             args = self._getEraseFidArgs(inImage, outImgMask, outResultImg)
             Plugin.runFidder(self, args)
-
-    def _generateUnstakedImg(self, tsId: str, tsFileName: str, index: int, suffix: str = '') -> None:
-        newTiFileName = self._getNewTiTmpFileName(tsId, index, suffix=suffix)
-        tiFName = f'{index}@{tsFileName}:mrcs'
-        self.ih.convert(tiFName, newTiFileName, DT_FLOAT)
 
     def _getOutputTsSet(self) -> SetOfTiltSeries:
         outSetSetAttrib = self._possibleOutputs.tiltSeries.name
@@ -428,21 +456,30 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtStreamingBase):
     def getOutputFailedSet(self, inputPtr: Pointer):
         """ Create output set for failed TS or tomograms. """
         inputSet = inputPtr.get()
-        if isinstance(inputSet, SetOfTiltSeries):
-            failedTs = getattr(self, OUTPUT_TS_FAILED_NAME, None)
+        failedTs = getattr(self, OUTPUT_TS_FAILED_NAME, None)
 
-            if failedTs:
-                failedTs.enableAppend()
-            else:
-                logger.info('Create the set of failed TS')
-                failedTs = SetOfTiltSeries.create(self._getPath(), template='tiltseries', suffix='Failed')
-                failedTs.copyInfo(inputSet)
-                failedTs.setStreamState(Set.STREAM_OPEN)
-                self._defineOutputs(**{OUTPUT_TS_FAILED_NAME: failedTs})
-                self._defineSourceRelation(inputPtr, failedTs)
+        if failedTs:
+            failedTs.enableAppend()
+        else:
+            logger.info(cyanStr('Create the set of failed TS'))
+            failedTs = SetOfTiltSeries.create(self._getPath(), template='tiltseries', suffix='Failed')
+            failedTs.copyInfo(inputSet)
+            failedTs.setStreamState(Set.STREAM_OPEN)
+            self._defineOutputs(**{OUTPUT_TS_FAILED_NAME: failedTs})
+            self._defineSourceRelation(inputPtr, failedTs)
 
-            return failedTs
-        return None
+        return failedTs
+
+    def _unstackTiltSeries(self, ts: TiltSeries, suffix: str = '') -> None:
+        tsId = ts.getTsId()
+        tsFn = ts.getFirstItem().getFileName()
+        sRate = ts.getSamplingRate()
+        imgStack = ImageReadersRegistry.open(tsFn)
+        for i, img in enumerate(imgStack):
+            newTiFileName = self._getNewTiTmpFileName(tsId, i + 1, suffix=suffix)
+            with mrcfile.new(newTiFileName) as mrc:
+                mrc.set_data(img)
+                mrc.voxel_size = sRate
 
     # --------------------------- INFO functions ------------------------------
     def _validate(self) -> List[str]:
