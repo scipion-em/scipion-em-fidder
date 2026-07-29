@@ -34,7 +34,6 @@ from pyworkflow.utils import Environ
 
 __version__ = '3.2.2'
 _logo = "icon.png"
-# _references = ['']
 
 
 class Plugin(pwem.Plugin):
@@ -47,7 +46,7 @@ class Plugin(pwem.Plugin):
     def _defineVariables(cls):
         cls._defineVar(FIDDER_ENV_ACTIVATION, FIDDER_DEFAULT_ACTIVATION_CMD)
         cls._defineVar(FIDDER_CUDA_LIB, pwem.Config.CUDA_LIB)
-        
+
     @classmethod
     def getFidderEnvActivation(cls):
         return cls.getVar(FIDDER_ENV_ACTIVATION)
@@ -100,10 +99,17 @@ class Plugin(pwem.Plugin):
         return neededProgs
 
     @classmethod
-    def runFidder(cls, protocol, args, cwd=None, numberOfMpi=1):
-        """ Run fidder command from a given protocol. """
+    def getBatchScript(cls):
+        """ Absolute path to the in-env batch worker that loads the model once
+        and processes a whole tilt-series in a single process. """
+        return os.path.join(os.path.dirname(__file__), 'scripts', 'fidder_batch.py')
+
+    @classmethod
+    def runFidderBatch(cls, protocol, manifestPath, cwd=None):
+        """ Run the batch worker (one process per tilt-series) inside the fidder
+        conda environment, passing it a JSON manifest of images to process. The
+        model/CUDA context is loaded once for the whole manifest. """
         cmd = cls.getCondaActivationCmd() + " "
         cmd += cls.getFidderEnvActivation()
-        cmd += f" && CUDA_VISIBLE_DEVICES=%(GPU)s {FIDDER} "
-        protocol.runJob(cmd, args, env=cls.getEnviron(), cwd=cwd, numberOfMpi=numberOfMpi)
-
+        cmd += f" && CUDA_VISIBLE_DEVICES=%(GPU)s python {cls.getBatchScript()} "
+        protocol.runJob(cmd, manifestPath, env=cls.getEnviron(), cwd=cwd, numberOfMpi=1)
