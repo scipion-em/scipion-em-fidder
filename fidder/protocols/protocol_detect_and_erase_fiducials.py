@@ -32,7 +32,7 @@ import sqlite3
 import traceback
 from enum import Enum
 from os.path import join, basename, exists
-from typing import Union, List, Counter
+from typing import Union, List
 import mrcfile
 import numpy as np
 from typing_extensions import Tuple
@@ -48,8 +48,7 @@ from pyworkflow.utils.retry_streaming import retry_on_sqlite_lock
 from tomo.objects import SetOfTiltSeries, TiltSeries, TiltImage
 from tomo.protocols.protocol_base_streaming_tomo import ProtocolBaseStreamingTomo
 from tomo.utils import sleepRandomly, writeTsSidecar
-from pwem import (genExecStatusDir, appendStreamItem, closeStreamJournal,
-                  touchHeartbeat, STREAM_HEARTBEAT_TIMEOUT, getExecStatusDir)
+from pwem import genExecStatusDir, appendStreamItem, getExecStatusDir
 
 logger = logging.getLogger(__name__)
 # Form variables
