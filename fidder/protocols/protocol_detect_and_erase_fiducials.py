@@ -43,12 +43,12 @@ from pwem.protocols import EMProtocol
 from pyworkflow.object import Set, Pointer
 from pyworkflow.protocol import PointerParam, FloatParam, GT, LE, GPU_LIST, StringParam, BooleanParam, LEVEL_ADVANCED, \
     STEPS_PARALLEL
-from pyworkflow.utils import Message, makePath, cyanStr, redStr, yellowStr
+from pyworkflow.utils import Message, makePath, cyanStr, redStr
 from pyworkflow.utils.retry_streaming import retry_on_sqlite_lock
 from tomo.objects import SetOfTiltSeries, TiltSeries, TiltImage
 from tomo.protocols.protocol_base_streaming_tomo import ProtocolBaseStreamingTomo
-from tomo.utils import sleepRandomly, writeTsSidecar
-from pwem import genExecStatusDir, appendStreamItem, getExecStatusDir
+from tomo.utils import writeTsSidecar
+from pwem import appendStreamItem, getExecStatusDir
 
 logger = logging.getLogger(__name__)
 # Form variables
@@ -128,37 +128,16 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtocolBaseStreamingTomo):
         else:
             self._insertNonStreamingSteps()
 
-    def stepsGeneratorStep(self) -> None:
-        closeSetStepDeps = []
-        inTsSet = self._getInTsSet()
-        genExecStatusDir(self)
-        self.readingOutput()
+    # stepsGeneratorStep is centralized in ProtocolBaseStreamingTomo; the hooks
+    # below provide the fidder-specific input set, tracking list and output name.
+    def _getStreamingInputTs(self):
+        return self._getInTsSet()
 
-        while True:
-            try:
-                inTsIds = set(inTsSet.getTSIds())
-                if self._stopGeneratingSteps(inTsSet,
-                                             inTsIds=inTsIds,
-                                             tsIdReadList=self.itemTsIdReadList,
-                                             outputNames=self._possibleOutputs.tiltSeries.name,
-                                             closeSetStepDeps=closeSetStepDeps):
-                    break
+    def _getProcessedTsIds(self) -> List[str]:
+        return self.itemTsIdReadList
 
-                nonProcessedTsIds = inTsIds - set(self.itemTsIdReadList)
-                if nonProcessedTsIds:
-                    tsToProcessDict = inTsSet.fetchNewTs(nonProcessedTsIds)
-                    for tsId, ts in tsToProcessDict.items():
-                        self._insertCommonSteps(ts, closeSetStepDeps)
-                        logger.info(cyanStr(f"Steps created for tsId = {tsId}"))
-                        self.itemTsIdReadList.append(tsId)
-
-                sleepRandomly()
-
-            except Exception as e:
-                logger.error(yellowStr(f'stepsGeneratorStep failed with exception: {e}.'))
-                logger.error(traceback.format_exc())
-                sleepRandomly()
-                continue
+    def _getStreamingOutputNames(self) -> str:
+        return self._possibleOutputs.tiltSeries.name
 
     def _insertNonStreamingSteps(self):
         closeSetStepDeps = []
@@ -286,15 +265,6 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtocolBaseStreamingTomo):
                 raise e
 
     # --------------------------- UTILS functions -----------------------------
-    def readingOutput(self) -> None:
-        outTsSet = getattr(self, self._possibleOutputs.tiltSeries.name, None)
-        if outTsSet:
-            for item in outTsSet:
-                self.itemTsIdReadList.append(item.getTsId())
-            self.info(cyanStr(f'TsIds processed: {self.itemTsIdReadList}'))
-        else:
-            self.info(cyanStr('No tilt-series have been processed yet'))
-
     def _getInTsSet(self, returnPointer: bool = False) -> Union[SetOfTiltSeries, Pointer]:
         inTsPointer = getattr(self, IN_TS_SET)
         return inTsPointer if returnPointer else inTsPointer.get()
