@@ -81,7 +81,6 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtocolBaseStreamingTomo):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.itemTsIdReadList = []
         self.failedItems = []
         self.sRate = -1
         self.ih = ImageHandler()
@@ -131,9 +130,6 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtocolBaseStreamingTomo):
     # Streaming Hooks ############################
     def _getStreamingInputSets(self):
         return [self._getInTsSet()]
-
-    def _getProcessedTsIds(self) -> List[str]:
-        return self.itemTsIdReadList
 
     def _getStreamingOutputNames(self) -> str:
         return self._possibleOutputs.tiltSeries.name
