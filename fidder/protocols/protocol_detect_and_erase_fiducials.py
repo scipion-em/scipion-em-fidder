@@ -128,9 +128,8 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtocolBaseStreamingTomo):
         else:
             self._insertNonStreamingSteps()
 
-    # stepsGeneratorStep is centralized in ProtocolBaseStreamingTomo; the hooks
-    # below provide the fidder-specific input set, tracking list and output name.
-    def _getStreamingInputTs(self):
+    # Streaming Hooks ############################
+    def _getStreamingInputSets(self):
         return self._getInTsSet()
 
     def _getProcessedTsIds(self) -> List[str]:
@@ -138,6 +137,8 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtocolBaseStreamingTomo):
 
     def _getStreamingOutputNames(self) -> str:
         return self._possibleOutputs.tiltSeries.name
+
+    # End of streaming hooks #####################
 
     def _insertNonStreamingSteps(self):
         closeSetStepDeps = []
