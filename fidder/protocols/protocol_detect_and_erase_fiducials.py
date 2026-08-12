@@ -130,7 +130,7 @@ class ProtFidderDetectAndEraseFiducials(EMProtocol, ProtocolBaseStreamingTomo):
 
     # Streaming Hooks ############################
     def _getStreamingInputSets(self):
-        return self._getInTsSet()
+        return [self._getInTsSet()]
 
     def _getProcessedTsIds(self) -> List[str]:
         return self.itemTsIdReadList
